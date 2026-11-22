@@ -1,0 +1,54 @@
+Sheaf includes the following open-source software and fonts.
+
+PDFsharp 6.2.4 — reading and writing PDF files
+https://github.com/empira/PDFsharp
+Copyright (c) 2005-2024 empira Software GmbH, Troisdorf (Cologne Area), Germany
+MIT License:
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+    documentation files (the "Software"), to deal in the Software without restriction, including without
+    limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+    Software, and to permit persons to whom the Software is furnished to do so, subject to the following
+    conditions:
+
+    The above copyright notice and this permission notice shall be included in all copies or substantial
+    portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+    TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+    CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+MigraDoc 6.2.4 (package PDFsharp-MigraDoc-GDI) — laying out Word documents and workbooks as PDF pages
+https://github.com/empira/PDFsharp
+Copyright (c) 2005-2024 empira Software GmbH, Troisdorf (Cologne Area), Germany
+MIT License (the same text as PDFsharp's above)
+
+Open XML SDK 3.5.1 (packages DocumentFormat.OpenXml and DocumentFormat.OpenXml.Framework) — reading Word,
+Excel and PowerPoint files and writing Word files, for the built-in converters
+https://github.com/dotnet/Open-XML-SDK
+Copyright (c) .NET Foundation and Contributors
+MIT License (the same text as PDFsharp's above)
+
+PdfPig 0.1.16 — reading the words of a PDF, for finding text to redact and highlight, and for PDF to Word
+https://github.com/UglyToad/PdfPig
+Copyright the PdfPig contributors
+Apache License 2.0 (see Apache-2.0.txt)
+
+ZXing.Net 0.16.11 — finding QR codes and barcodes to redact
+https://github.com/micjahn/ZXing.Net
+Copyright Michael Jahn and the ZXing authors
+Apache License 2.0 (see Apache-2.0.txt)
+
+Geist and Geist Mono — the typeface of the app and of text added to pages
+https://github.com/vercel/geist-font
+Copyright 2026 The Geist Project Authors
+SIL Open Font License 1.1 (see OFL-Geist.txt). The embedded copies carry a "Sheaf " prefix in their internal
+family names so an installed Geist is never picked instead.
+
+Sacramento — typed signatures
+Copyright (c) 2012, Brian J. Bonislawsky DBA Astigmatic (AOETI)
+SIL Open Font License 1.1 (see OFL-Sacramento.txt). Unmodified, because its name is a Reserved Font Name.
+
+Rendering pages, recognising text (OCR), the camera and scanners use components built into Windows.

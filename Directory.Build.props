@@ -1,0 +1,21 @@
+<Project>
+  <PropertyGroup>
+    <!-- Windows 10 SDK projections give us Windows.Data.Pdf for rendering pages. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Company>agenth1tman</Company>
+    <Authors>agenth1tman</Authors>
+    <Product>Sheaf</Product>
+    <Copyright>© 2026 agenth1tman</Copyright>
+    <Version>1.0.0</Version>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- The UI is built in code, not in the designer, so designer serialization hints don't apply. -->
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
+    <!-- No .pdb files next to the released exe. -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+  </PropertyGroup>
+</Project>
