@@ -34,14 +34,30 @@ static class OverlayWriter
     static void Draw(XGraphics g, PageObject item, List<XImage> images)
     {
         using Matrix? turn = ShapeGeometry.Transform(item);
-        if (turn is null)
+        if (turn is null && !item.IsCropped && item.Erased.Count == 0)
         {
             DrawUnturned(g, item, images);
             return;
         }
         XGraphicsState state = g.Save();
-        float[] m = turn.Elements;
-        g.MultiplyTransform(new XMatrix(m[0], m[1], m[2], m[3], m[4], m[5]), XMatrixOrder.Prepend);
+        if (turn is not null)
+        {
+            float[] m = turn.Elements;
+            g.MultiplyTransform(new XMatrix(m[0], m[1], m[2], m[3], m[4], m[5]), XMatrixOrder.Prepend);
+        }
+        // A crop keeps part of the box, in the object's own frame.
+        if (item.IsCropped)
+        {
+            RectangleF kept = ShapeGeometry.CropClip(item);
+            g.IntersectClip(new XRect(kept.X, kept.Y, kept.Width, kept.Height));
+        }
+        // Erased parts are left out: drawn through a clip of what is left.
+        if (item.Erased.Count > 0)
+        {
+            var left = new XGraphicsPath { FillMode = XFillMode.Winding };
+            foreach (RectangleF r in ShapeGeometry.KeptAfterErasing(item)) left.AddRectangle(r.X, r.Y, r.Width, r.Height);
+            g.IntersectClip(left);
+        }
         DrawUnturned(g, item, images);
         g.Restore(state);
     }
@@ -93,14 +109,12 @@ static class OverlayWriter
             else g.DrawRectangle(background, rect);
         }
         if (string.IsNullOrEmpty(item.Text)) return;
-        var style = (item.Bold, item.Italic) switch
+        if (item.Spans.Count > 0)
         {
-            (true, true) => XFontStyleEx.BoldItalic,
-            (true, false) => XFontStyleEx.Bold,
-            (false, true) => XFontStyleEx.Italic,
-            _ => XFontStyleEx.Regular,
-        };
-        var font = new XFont(item.FontFamily, item.FontSize, style);
+            DrawStyledText(g, item, rect);
+            return;
+        }
+        var font = FontOf(item, new TextStyle(item.Bold, item.Italic, false, item.StrokeColor));
         var formatter = new XTextFormatter(g)
         {
             Alignment = item.Align switch
@@ -118,6 +132,40 @@ static class OverlayWriter
         double shift = item.Anchor switch { TextAnchor.Middle => spare / 2, TextAnchor.Bottom => spare, _ => 0 };
         var area = new XRect(rect.X + Inset, rect.Y + Inset + shift, width, Math.Max(1, rect.Height - 2 * Inset) + item.FontSize);
         formatter.DrawString(item.Text, font, new XSolidBrush(Color(item.StrokeColor, item.Opacity)), area, XStringFormats.TopLeft);
+    }
+
+    static XFont FontOf(PageObject item, TextStyle style) => new(item.FontFamily, item.FontSize, (style.Bold, style.Italic) switch
+    {
+        (true, true) => XFontStyleEx.BoldItalic,
+        (true, false) => XFontStyleEx.Bold,
+        (false, true) => XFontStyleEx.Italic,
+        _ => XFontStyleEx.Regular,
+    });
+
+    /// <summary>A text box whose words have styles of their own, laid out the way the editor lays it out.</summary>
+    static void DrawStyledText(XGraphics g, PageObject item, XRect rect)
+    {
+        var fonts = new Dictionary<TextStyle, XFont>();
+        XFont Font(TextStyle style) => fonts.TryGetValue(style with { Underline = false, Color = 0 }, out XFont? font) ? font
+            : fonts[style with { Underline = false, Color = 0 }] = FontOf(item, style);
+        const double Inset = 2;
+        float width = (float)Math.Max(1, rect.Width - 2 * Inset);
+        List<TextLine> lines = TextLayout.Lay(item, width, (text, style) => (float)g.MeasureString(text, Font(style), XStringFormats.TopLeft).Width,
+            style => (float)Font(style).GetHeight());
+        double height = lines.Sum(line => line.Height);
+        double spare = Math.Max(0, rect.Height - 2 * Inset - height);
+        double shift = item.Anchor switch { TextAnchor.Middle => spare / 2, TextAnchor.Bottom => spare, _ => 0 };
+        foreach (TextLine line in lines)
+            foreach (TextPiece piece in line.Pieces)
+            {
+                XFont font = Font(piece.Style);
+                double x = rect.X + Inset + piece.X, y = rect.Y + Inset + shift + line.Top;
+                var brush = new XSolidBrush(Color(piece.Style.Color, item.Opacity));
+                if (piece.Text.Trim().Length > 0) g.DrawString(piece.Text, font, brush, x, y, XStringFormats.TopLeft);
+                if (!piece.Style.Underline) continue;
+                double baseline = y + line.Height * 0.8, thickness = Math.Max(0.5, item.FontSize * 0.06);
+                g.DrawLine(new XPen(Color(piece.Style.Color, item.Opacity), thickness), x, baseline + thickness * 1.5, x + piece.Width, baseline + thickness * 1.5);
+            }
     }
 
     /// <summary>The height of text wrapped to a width the way <see cref="XTextFormatter"/> wraps it, word by word.</summary>

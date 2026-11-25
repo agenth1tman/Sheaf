@@ -10,7 +10,7 @@ publish/
 *.user
 *.suo
 
-# well duh
+# AI assistant files (local only)
 .claude/
 CLAUDE.md
 

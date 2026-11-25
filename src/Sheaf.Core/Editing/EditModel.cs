@@ -13,13 +13,18 @@ public enum MarkKind
     Heart, Star, Parallelogram,
     /// <summary>A curve through any number of points (a <see cref="Curve"/> is the older kind with one bend handle).</summary>
     Spline,
+    /// <summary>
+    /// Points joined by straight or curved pieces, open or closed, as a vector app's pen draws them: each point has
+    /// a handle on either side (<see cref="PageObject.Strokes"/> holds the points, then the handles in, then out).
+    /// </summary>
+    Path,
 }
 
 /// <summary>What an open line or curve ends in, at either end.</summary>
 public enum LineEnd { None, Arrow, Triangle, Dot, Bar }
 
 /// <summary>How a pen stroke is laid down.</summary>
-public enum PenKind { Pen, Pencil, Marker, Brush, Highlighter, Crayon }
+public enum PenKind { Pen, Pencil, Marker, Brush, Highlighter, Crayon, PaintBrush, Watercolor }
 
 /// <summary>The shape of a redaction mark; a Text mark covers words and takes only their letters out when applied.</summary>
 public enum RedactShape { Rectangle, Ellipse, Freeform, Text }
@@ -62,6 +67,9 @@ public sealed class PageObject
     /// <summary>How much of the circle a pie keeps, in degrees.</summary>
     public float Sweep { get; set; } = 270;
 
+    /// <summary>Whether a <see cref="MarkKind.Path"/> runs on from its last point back to its first.</summary>
+    public bool Closed { get; set; }
+
     /// <summary>
     /// How far the object is turned clockwise about its middle, in degrees, and whether it is flipped across or
     /// down first. Shapes, text and images turn this way; lines and drawings turn by moving their points.
@@ -99,6 +107,32 @@ public sealed class PageObject
     public string Comment { get; set; } = "";
     public bool Hidden { get; set; }
 
+    /// <summary>A locked object can't be chosen on the page, moved or erased; the layer list unlocks it.</summary>
+    public bool Locked { get; set; }
+
+    /// <summary>
+    /// How much of the object is trimmed off each side, as fractions of its box in its own frame (0 keeps it all):
+    /// cropping a shape, a drawing or a line hides what lies outside the part kept.
+    /// </summary>
+    public float CropLeft { get; set; }
+    public float CropTop { get; set; }
+    public float CropRight { get; set; }
+    public float CropBottom { get; set; }
+
+    /// <summary>
+    /// Styles for stretches of a text box's text (a bold word, a red phrase), covering the text end to end in order;
+    /// empty when the whole box has one style.
+    /// </summary>
+    public List<TextSpan> Spans { get; set; } = [];
+
+    /// <summary>
+    /// Where the eraser went over the object, in its own frame: each a path rubbed out at the width in
+    /// <see cref="ErasedWidths"/>; a path with a width below zero is an outline whose inside was taken whole, as lifting
+    /// part of the page takes it. What lies under them doesn't show. (The eraser takes points out of drawings.)
+    /// </summary>
+    public List<List<PointF>> Erased { get; set; } = [];
+    public List<float> ErasedWidths { get; set; } = [];
+
     /// <summary>Objects that share a group move and select together; null when the object is on its own.</summary>
     public Guid? Group { get; set; }
 
@@ -113,6 +147,14 @@ public sealed class PageObject
     }
 
     [JsonIgnore]
+    public bool IsCropped => CropLeft > 0 || CropTop > 0 || CropRight > 0 || CropBottom > 0;
+
+    /// <summary>The part of the box a crop keeps, in the object's own frame.</summary>
+    [JsonIgnore]
+    public RectangleF CropBounds => new(X + CropLeft * Width, Y + CropTop * Height,
+        Math.Max(0, (1 - CropLeft - CropRight) * Width), Math.Max(0, (1 - CropTop - CropBottom) * Height));
+
+    [JsonIgnore]
     public bool IsMarkup => Kind is MarkKind.Highlight or MarkKind.Underline or MarkKind.Strikeout or MarkKind.Note;
 
     public PageObject Clone()
@@ -120,6 +162,9 @@ public sealed class PageObject
         var copy = (PageObject)MemberwiseClone();
         copy.Strokes = [.. Strokes.Select(stroke => stroke.ToList())];
         copy.Pressures = [.. Pressures.Select(stroke => stroke.ToList())];
+        copy.Spans = [.. Spans.Select(span => span with { })];
+        copy.Erased = [.. Erased.Select(path => path.ToList())];
+        copy.ErasedWidths = [.. ErasedWidths];
         return copy;
     }
 
@@ -128,7 +173,7 @@ public sealed class PageObject
     {
         X += dx;
         Y += dy;
-        foreach (List<PointF> stroke in Strokes)
+        foreach (List<PointF> stroke in Strokes.Concat(Erased))
             for (int i = 0; i < stroke.Count; i++) stroke[i] = new PointF(stroke[i].X + dx, stroke[i].Y + dy);
     }
 
@@ -136,9 +181,12 @@ public sealed class PageObject
     public void Resize(RectangleF target)
     {
         float sx = Width == 0 ? 1 : target.Width / Width, sy = Height == 0 ? 1 : target.Height / Height;
-        foreach (List<PointF> stroke in Strokes)
+        foreach (List<PointF> stroke in Strokes.Concat(Erased))
             for (int i = 0; i < stroke.Count; i++)
                 stroke[i] = new PointF(target.X + (stroke[i].X - X) * sx, target.Y + (stroke[i].Y - Y) * sy);
+        // Rubbed-out paths keep their width in proportion.
+        float scale = MathF.Sqrt(Math.Abs(sx * sy));
+        for (int i = 0; i < ErasedWidths.Count; i++) ErasedWidths[i] *= scale;
         Bounds = target;
     }
 
@@ -150,6 +198,18 @@ public sealed class PageObject
         float left = points.Min(p => p.X), top = points.Min(p => p.Y), right = points.Max(p => p.X), bottom = points.Max(p => p.Y);
         Bounds = RectangleF.FromLTRB(left - padding, top - padding, Math.Max(right + padding, left - padding + 1), Math.Max(bottom + padding, top - padding + 1));
     }
+}
+
+/// <summary>The style of a stretch of a text box's text: a word made bold, a phrase in another colour.</summary>
+public sealed record TextSpan
+{
+    public int Length { get; set; }
+    public bool Bold { get; set; }
+    public bool Italic { get; set; }
+    public bool Underline { get; set; }
+
+    /// <summary>ARGB.</summary>
+    public int Color { get; set; }
 }
 
 /// <summary>A page of the working document: a page of one of the source files, or a blank page.</summary>
@@ -203,6 +263,12 @@ public sealed class EditDocument
     public List<string> Sources { get; set; } = [];
     public List<PageEntry> Pages { get; set; } = [];
 
+    /// <summary>
+    /// The title stored in the PDF, which browsers and readers show in their tab or title bar instead of the file
+    /// name; null keeps the file's own.
+    /// </summary>
+    public string? Title { get; set; }
+
     /// <summary>The password the original file was opened with, if it had one.</summary>
     public string? Password { get; set; }
 
@@ -217,6 +283,7 @@ public sealed class EditDocument
         Sources = [.. Sources],
         Pages = [.. Pages.Select(page => page.Clone())],
         Password = Password,
+        Title = Title,
         Fields = Fields,
         FieldValues = new Dictionary<string, string>(FieldValues),
     };

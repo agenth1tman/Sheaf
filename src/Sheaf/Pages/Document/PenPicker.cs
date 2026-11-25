@@ -20,6 +20,8 @@ internal sealed class PenPicker : Control, IItemHost
         (PenKind.Highlighter, "Highlighter", "Wide and see-through; follows the lines of text it crosses"),
         (PenKind.Brush, "Brush", "Swells and tapers"),
         (PenKind.Crayon, "Crayon", "Waxy, with the paper showing through"),
+        (PenKind.PaintBrush, "Paint Brush", "Bristles of paint that run dry towards the end"),
+        (PenKind.Watercolor, "Watercolour", "Thin washes of colour that deepen where they overlap"),
     ];
 
     // The same id every time, so the pencil's and crayon's grain in the samples doesn't change as they repaint.

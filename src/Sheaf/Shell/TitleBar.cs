@@ -86,6 +86,9 @@ internal sealed class TitleBar : Panel, IItemHost
 
     public event EventHandler<TabItem>? TabSelected;
     public event EventHandler<TabItem>? CloseRequested;
+
+    /// <summary>A tab was double-clicked: rename what it shows.</summary>
+    public event EventHandler<TabItem>? RenameRequested;
     public event EventHandler? NewTabRequested;
     public event EventHandler? SettingsRequested;
 
@@ -504,6 +507,12 @@ internal sealed class TitleBar : Panel, IItemHost
         if (e.Button != MouseButtons.Left) return;
         if (!_tabs[tab].IsPinned && CloseBounds(TabBounds()[tab]).Contains(e.Location)) { CloseRequested?.Invoke(this, _tabs[tab]); return; }
         Select(tab);
+        if (e.Clicks == 2 && !_tabs[tab].IsPinned)
+        {
+            _dragTab = -1;
+            RenameRequested?.Invoke(this, _tabs[tab]);
+            return;
+        }
         if (!_tabs[tab].IsPinned) { _dragTab = tab; _dragStartX = e.X; }
     }
 

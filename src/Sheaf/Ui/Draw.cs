@@ -71,6 +71,13 @@ internal static class Draw
     public static void Text(Graphics g, string text, Font font, Rectangle bounds, Color color, TextFormatFlags flags = Line) =>
         TextRenderer.DrawText(g, text, font, bounds, color, flags);
 
+    /// <summary>
+    /// Text on a known solid background. Needed for text drawn into a picture rather than on screen: there, GDI blends
+    /// the app's own fonts against black unless told what is behind them, which smears dark text on a light theme.
+    /// </summary>
+    public static void Text(Graphics g, string text, Font font, Rectangle bounds, Color color, Color back, TextFormatFlags flags = Line) =>
+        TextRenderer.DrawText(g, text, font, bounds, color, back, flags);
+
     public static Size Measure(string text, Font font) =>
         TextRenderer.MeasureText(text.Length == 0 ? " " : text, font, Size.Empty, TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
 

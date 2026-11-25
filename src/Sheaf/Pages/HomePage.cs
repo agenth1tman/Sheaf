@@ -14,9 +14,14 @@ namespace Sheaf.Pages;
 /// <summary>Home: open or scan, the files you worked on last, and every tool by what it does.</summary>
 internal sealed class HomePage : TabContent
 {
-    const int RecentCount = 6;
+    // How many recent files show at once: six on a wide window, down to three on a narrow one.
+    int _recentCount = 6;
+    int RecentCount => _recentCount;
+    Surface? _scroller;
+    TableLayoutPanel? _startRow, _toolsGrid;
+    bool _searchBelow, _fitting;
     readonly InputBox _search = Make.Input("Find a tool or a recent file", maxLength: 60);
-    readonly RecentStrip _recent = new() { ColumnCount = RecentCount, AutoSize = true, Dock = DockStyle.Top, Margin = Padding.Empty };
+    readonly RecentStrip _recent = new() { ColumnCount = 6, AutoSize = true, Dock = DockStyle.Top, Margin = Padding.Empty };
     readonly TextLabel _recentHeading = Make.Section("Recent", topSpace: 0);
     readonly TextLabel _recentPosition = new("", Tone.Tertiary) { Font = AppFonts.Small, Margin = new Padding(0, 7, 8, 0) };
     readonly AppButton _newer = new("", ButtonKind.Quiet, "chevron-left") { LogicalHeight = 28, AccessibleName = "Newer Files" };
@@ -45,6 +50,7 @@ internal sealed class HomePage : TabContent
     {
         SuspendLayout();
         var scroller = new Surface { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(64, 36, 64, 40) };
+        _scroller = scroller;
         var content = Make.Stack(BuildStartRow(), Make.Hint("Drop PDFs, images or Office files anywhere in this window to open them."),
             _recentHeader, _recent, Make.Section("Tools", topSpace: 36), BuildTools(), _noMatch);
         content.Dock = DockStyle.Top;
@@ -85,13 +91,14 @@ internal sealed class HomePage : TabContent
     {
         var open = new AppButton("Open PDF…", ButtonKind.Primary, "folder") { LogicalHeight = 40 };
         var scan = new AppButton("Scan a Document", ButtonKind.Secondary, "scan") { LogicalHeight = 40 };
-        var blank = new AppButton("Blank PDF", ButtonKind.Secondary, "file-plus") { LogicalHeight = 40 };
+        var blank = new AppButton("Blank PDF", ButtonKind.Secondary, "file-plus") { LogicalHeight = 40, Chevron = true };
         var image = new AppButton("Image", ButtonKind.Secondary, "image") { LogicalHeight = 40, Chevron = true };
         image.Click += (_, _) => ShowImageMenu(image);
         Tips.Shared.SetToolTip(image, "Edit a picture, or start a blank one\nExport it as an image or a PDF");
         open.Click += (_, _) => { foreach (string file in Shell.PickFiles(FileKind.Pdf, multiple: true)) Shell.OpenDocument(file); };
         scan.Click += (_, _) => Shell.OpenScan();
-        blank.Click += (_, _) => Shell.OpenBlankDocument();
+        blank.Click += (_, _) => ShowBlankMenu(blank);
+        Tips.Shared.SetToolTip(blank, "Start a blank PDF\nA4, Letter, Legal or any size you type");
         _search.Width = 380;
         _search.Height = 40;
 
@@ -101,6 +108,7 @@ internal sealed class HomePage : TabContent
         row.Controls.Add(Make.Row(open, scan, blank, image), 0, 0);
         _search.Anchor = AnchorStyles.Right;
         row.Controls.Add(_search, 1, 0);
+        _startRow = row;
         return row;
     }
 
@@ -110,8 +118,24 @@ internal sealed class HomePage : TabContent
         ("Blank 1080 × 1080 (Square)", new Size(1080, 1080)),
         ("Blank 1080 × 1920 (Tall)", new Size(1080, 1920)),
         ("Blank 1200 × 630 (Link Preview)", new Size(1200, 630)),
-        ("Blank A4 at 150 dpi (1240 × 1754)", new Size(1240, 1754)),
     ];
+
+    void ShowBlankMenu(AppButton button)
+    {
+        var menu = Menus.Create();
+        foreach (string name in new[] { "A4", "Letter", "Legal", "A3", "A5" })
+        {
+            SizeF points = NewBlankDialog.Papers.First(paper => paper.Name == name).Points;
+            menu.Items.Add(Menus.Item(name, () => Shell.OpenBlankDocument(new BlankChoice(false, points, unchecked((int)0xFFFFFFFF)))));
+        }
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(Menus.Item("Other Size or Colour…", () =>
+        {
+            if (NewBlankDialog.Ask(FindForm(), image: false) is { } choice) Shell.OpenBlankDocument(choice);
+        }));
+        menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
+        Menus.Show(menu, button, Menus.Below(button));
+    }
 
     void ShowImageMenu(AppButton button)
     {
@@ -122,6 +146,10 @@ internal sealed class HomePage : TabContent
         }));
         menu.Items.Add(new ToolStripSeparator());
         foreach (var (name, pixels) in ImageSizes) menu.Items.Add(Menus.Item(name, () => Shell.OpenImageDocument(null, pixels)));
+        menu.Items.Add(Menus.Item("Blank of Any Size…", () =>
+        {
+            if (NewBlankDialog.Ask(FindForm(), image: true) is { } choice) Shell.OpenBlankDocument(choice);
+        }));
         menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
         Menus.Show(menu, button, Menus.Below(button));
     }
@@ -130,6 +158,7 @@ internal sealed class HomePage : TabContent
     {
         var grid = new TableLayoutPanel { ColumnCount = 4, AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = Padding.Empty };
         for (int i = 0; i < 4; i++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        _toolsGrid = grid;
         foreach (var category in ToolCatalog.All.GroupBy(info => info.Category).OrderBy(group => group.Key))
         {
             var heading = new TextLabel(ToolInfo.CategoryName(category.Key), Tone.Tertiary) { Font = AppFonts.Small, Margin = new Padding(10, 0, 0, 6) };
@@ -148,6 +177,68 @@ internal sealed class HomePage : TabContent
             _groups.Add((heading, column));
         }
         return grid;
+    }
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        FitToWidth();
+    }
+
+    /// <summary>
+    /// Fits Home to the window: narrower margins, the search box under the buttons, fewer recent files at a time
+    /// and the tools in two columns as the window narrows, so nothing overlaps on a laptop screen.
+    /// </summary>
+    void FitToWidth()
+    {
+        if (_scroller is null || _startRow is null || _toolsGrid is null) return;
+        int width = (int)Math.Round(Width * 96f / Math.Max(96, DeviceDpi));
+        if (width <= 0) return;
+        int side = width < 900 ? 24 : width < 1200 ? 40 : 64;
+        _scroller.Padding = new Padding(LogicalToDeviceUnits(side), LogicalToDeviceUnits(width < 900 ? 24 : 36), LogicalToDeviceUnits(side), LogicalToDeviceUnits(40));
+        int content = width - 2 * side - SystemInformation.VerticalScrollBarWidth;
+
+        bool below = content < 1000;
+        if (below != _searchBelow)
+        {
+            _searchBelow = below;
+            _startRow.SuspendLayout();
+            _startRow.SetCellPosition(_search, new TableLayoutPanelCellPosition(below ? 0 : 1, below ? 1 : 0));
+            _startRow.SetColumnSpan(_search, below ? 2 : 1);
+            _search.Anchor = below ? AnchorStyles.Left | AnchorStyles.Right : AnchorStyles.Right;
+            _search.Margin = below ? new Padding(0, LogicalToDeviceUnits(10), 0, 0) : Padding.Empty;
+            _startRow.ResumeLayout(true);
+        }
+
+        int tiles = Math.Clamp(content / 165, 3, 6);
+        if (tiles != _recentCount)
+        {
+            _recentCount = tiles;
+            _recent.SuspendLayout();
+            _recent.ColumnStyles.Clear();
+            _recent.ColumnCount = tiles;
+            for (int i = 0; i < tiles; i++) _recent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / tiles));
+            _recent.ResumeLayout(false);
+            _fitting = true;
+            try { ReloadRecent(); }
+            finally { _fitting = false; }
+        }
+
+        int columns = content < 760 ? 2 : 4;
+        if (columns != _toolsGrid.ColumnCount)
+        {
+            _toolsGrid.SuspendLayout();
+            _toolsGrid.ColumnStyles.Clear();
+            _toolsGrid.ColumnCount = columns;
+            for (int i = 0; i < columns; i++) _toolsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / columns));
+            var groups = _groups.Select(group => group.Column).ToList();
+            for (int i = 0; i < groups.Count; i++)
+            {
+                _toolsGrid.SetCellPosition(groups[i], new TableLayoutPanelCellPosition(i % columns, i / columns));
+                groups[i].Margin = new Padding(0, 0, 24, columns == 2 && i < 2 ? 24 : 0);
+            }
+            _toolsGrid.ResumeLayout(true);
+        }
     }
 
     /// <summary>A click on anything that isn't a control of its own (background, headings) leaves the search box.</summary>
@@ -204,7 +295,7 @@ internal sealed class HomePage : TabContent
         var drawnAt = _actors.Where(actor => actor.Entry is not null).ToDictionary(actor => actor.Entry!, actor => actor.Bounds(_animationMs));
         EndAnimation();
         var tiles = _recent.Controls.OfType<RecentTile>().ToDictionary(tile => tile.Entry);
-        bool animate = Motion.Enabled && IsHandleCreated && IsInFront && _recent.Visible && tiles.Count > 0 && _search.Text.Length == 0;
+        bool animate = Motion.Enabled && IsHandleCreated && IsInFront && _recent.Visible && tiles.Count > 0 && _search.Text.Length == 0 && !_fitting;
         if (tiles.Values.FirstOrDefault(tile => tile.ContainsFocus) is { } focused)
         {
             (_focusEntry, _focusColumn) = (focused.Entry, _recent.GetColumn(focused));
@@ -388,15 +479,7 @@ internal sealed class HomePage : TabContent
 
     void ClearRecent()
     {
-        var page = new TaskDialogPage
-        {
-            Caption = "Sheaf",
-            Heading = "Clear the Recent list?",
-            Text = "The files themselves stay where they are.",
-            Buttons = { new TaskDialogButton("Clear Recent"), TaskDialogButton.Cancel },
-            Icon = TaskDialogIcon.None,
-        };
-        if (TaskDialog.ShowDialog(this, page) != page.Buttons[0]) return;
+        if (AskDialog.Ask(FindForm(), "Clear the Recent List?", "The files themselves stay where they are.", "Clear Recent") != DialogResult.OK) return;
         History.Clear();
     }
 
@@ -530,7 +613,10 @@ internal sealed class ToolRow : Button
             Icons.Draw(g, _tool.Icon, new Rectangle(badgeBox.X + (badge - icon) / 2, badgeBox.Y + (badge - icon) / 2, icon, icon), p.Text2, 1.9f);
         }
         int textLeft = badgeBox.Right + LogicalToDeviceUnits(12);
-        Draw.Text(g, _tool.Title, AppFonts.Body, new Rectangle(textLeft, 0, Width - textLeft - pad, Height), p.Text);
+        var title = new Rectangle(textLeft, 0, Width - textLeft - pad, Height);
+        // At rest (and so in the cached picture) the row shows its background behind the name.
+        if (_hover.Value == 0 && _press.Value == 0) Draw.Text(g, _tool.Title, AppFonts.Body, title, p.Text, Draw.BackgroundOf(this));
+        else Draw.Text(g, _tool.Title, AppFonts.Body, title, p.Text);
     }
 
     static Color BadgeColor(string label) => label switch
@@ -699,8 +785,9 @@ internal sealed class RecentTile : Button
         }
 
         int textTop = thumbHeight + LogicalToDeviceUnits(10);
-        Draw.Text(g, Text, AppFonts.BodyMedium, new Rectangle(2, textTop, Width - 4, AppFonts.BodyMedium.Height + 2), p.Text);
-        Draw.Text(g, Meta, AppFonts.Small, new Rectangle(2, textTop + AppFonts.BodyMedium.Height + LogicalToDeviceUnits(4), Width - 4, AppFonts.Small.Height + 2), p.Text3);
+        Color back = Draw.BackgroundOf(this);
+        Draw.Text(g, Text, AppFonts.BodyMedium, new Rectangle(2, textTop, Width - 4, AppFonts.BodyMedium.Height + 2), p.Text, back);
+        Draw.Text(g, Meta, AppFonts.Small, new Rectangle(2, textTop + AppFonts.BodyMedium.Height + LogicalToDeviceUnits(4), Width - 4, AppFonts.Small.Height + 2), p.Text3, back);
     }
 }
 

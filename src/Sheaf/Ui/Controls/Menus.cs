@@ -16,8 +16,122 @@ internal static class Menus
             Padding = new Padding(4),
         };
         menu.Opening += (_, _) => Fit(menu);
+        menu.ItemAdded += (_, e) => { if (e.Item is { } added) FadeOnHover(added); };
         MenuChrome.Attach(menu);
         return menu;
+    }
+
+    /// <summary>
+    /// A text box's right-click menu in the app's style, with only what editing text needs (Windows' own adds input
+    /// method and reading-order entries).
+    /// </summary>
+    public static ContextMenuStrip ForText(TextBoxBase box)
+    {
+        ContextMenuStrip menu = Create();
+        menu.ShowImageMargin = false;
+        ToolStripMenuItem undo = Item("Undo", box.Undo, "Ctrl+Z"), cut = Item("Cut", box.Cut, "Ctrl+X"), copy = Item("Copy", box.Copy, "Ctrl+C"),
+            paste = Item("Paste", box.Paste, "Ctrl+V"), delete = Item("Delete", () => box.SelectedText = "", "Del"), all = Item("Select All", box.SelectAll, "Ctrl+A");
+        menu.Items.AddRange([undo, new ToolStripSeparator(), cut, copy, paste, delete, new ToolStripSeparator(), all]);
+        menu.Opening += (_, _) =>
+        {
+            bool picked = box.SelectionLength > 0, editable = !box.ReadOnly && box.Enabled;
+            bool password = box is TextBox { UseSystemPasswordChar: true } or TextBox { PasswordChar: not '\0' };
+            undo.Enabled = editable && box.CanUndo;
+            cut.Enabled = delete.Enabled = picked && editable && !password;
+            copy.Enabled = picked && !password;
+            bool canPaste;
+            try { canPaste = Clipboard.ContainsText(); }
+            catch (System.Runtime.InteropServices.ExternalException) { canPaste = false; }
+            paste.Enabled = editable && canPaste;
+            all.Enabled = box.TextLength > 0;
+        };
+        box.Disposed += (_, _) => menu.Dispose();
+        return menu;
+    }
+
+    /// <summary>How much of a row's hover highlight shows (0 to 1), fading in as the pointer comes and out as it goes.</summary>
+    sealed class Hover
+    {
+        public double Shown;
+        public Tween? Fade;
+    }
+
+    static readonly ConditionalWeakTable<ToolStripItem, Hover> Hovers = [];
+
+    static void FadeOnHover(ToolStripItem item)
+    {
+        if (item is not ToolStripMenuItem menuItem) return;
+        Hover hover = Hovers.GetOrCreateValue(item);
+        void To(double target, int ms)
+        {
+            hover.Fade?.Cancel();
+            double from = hover.Shown;
+            hover.Fade = Motion.Run(ms, t => { hover.Shown = from + (target - from) * t; item.Invalidate(); });
+        }
+        item.MouseEnter += (_, _) => { if (item.Enabled) To(1, 90); };
+        item.MouseLeave += (_, _) => To(0, 140);
+        foreach (ToolStripItem inner in menuItem.DropDownItems) FadeOnHover(inner);
+        menuItem.DropDown.ItemAdded += (_, e) => { if (e.Item is { } added) FadeOnHover(added); };
+    }
+
+    /// <summary>
+    /// The words under a flyout opened by holding its button: a light sweeps across them, again and again while
+    /// the button is held, the way "slide to unlock" asked to be slid.
+    /// </summary>
+    internal sealed class SlideHint : ToolStripLabel
+    {
+        FrameLoop? _loop;
+        double _phase;
+
+        public SlideHint(string text) : base(text)
+        {
+            Font = AppFonts.Small;
+            Padding = new Padding(4, 4, 4, 6);
+            AutoSize = true;
+        }
+
+        public void Start()
+        {
+            if (!Motion.Enabled || _loop is { IsRunning: true }) return;
+            _loop = Motion.Loop(seconds =>
+            {
+                if (IsDisposed || Owner is not { Visible: true }) return false;
+                _phase = (_phase + seconds / 1.8) % 1;
+                Invalidate();
+                return true;
+            });
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _loop?.Stop();
+            base.Dispose(disposing);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            Rectangle area = new(Padding.Left, 0, Width - Padding.Horizontal, Height);
+            Color dim = Theme.Current.Text3, lit = Theme.Current.Text;
+            using var format = new StringFormat { LineAlignment = StringAlignment.Center, Alignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap };
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            if (_loop is not { IsRunning: true })
+            {
+                using var plain = new SolidBrush(dim);
+                g.DrawString(Text, Font, plain, area, format);
+                return;
+            }
+            // A band a third as wide as the words, travelling across them from left to right.
+            float band = 0.35f, centre = (float)(_phase * (1 + 2 * band) - band);
+            float[] positions = [0, Math.Clamp(centre - band, 0.001f, 0.997f), Math.Clamp(centre, 0.002f, 0.998f), Math.Clamp(centre + band, 0.003f, 0.999f), 1];
+            for (int i = 1; i < positions.Length; i++) positions[i] = Math.Max(positions[i], positions[i - 1] + 0.0005f);
+            positions[^1] = 1;
+            using var brush = new System.Drawing.Drawing2D.LinearGradientBrush(new RectangleF(area.X - 1, 0, area.Width + 2, Height), dim, dim, 0f)
+            {
+                InterpolationColors = new System.Drawing.Drawing2D.ColorBlend { Colors = [dim, dim, lit, dim, dim], Positions = positions },
+            };
+            g.DrawString(Text, Font, brush, area, format);
+        }
     }
 
     /// <summary>
@@ -180,10 +294,15 @@ internal static class Menus
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
-            if (!e.Item.Selected || !e.Item.Enabled || Gliding(e.ToolStrip)) return;
+            if (!e.Item.Enabled || Gliding(e.ToolStrip)) return;
+            // Fading with the pointer; chosen with the keyboard, it shows at once.
+            double shown = Hovers.TryGetValue(e.Item, out Hover? hover) ? hover.Shown : 0;
+            if (e.Item.Selected && (hover is null || hover.Fade is null || !e.Item.Bounds.Contains(e.Item.Owner?.PointToClient(Control.MousePosition) ?? Point.Empty))) shown = 1;
+            if (shown <= 0.01) return;
             int inset = e.Item.Owner?.LogicalToDeviceUnits(2) ?? 2;
             var bounds = new Rectangle(inset, 0, e.Item.Width - 2 * inset, e.Item.Height);
-            Draw.Box(e.Graphics, bounds, e.Item.Owner?.LogicalToDeviceUnits(5) ?? 5, Theme.IsDark ? Theme.Current.Active : Theme.Current.Hover);
+            Color fill = Theme.IsDark ? Theme.Current.Active : Theme.Current.Hover;
+            Draw.Box(e.Graphics, bounds, e.Item.Owner?.LogicalToDeviceUnits(5) ?? 5, Color.FromArgb((int)Math.Round(fill.A * Math.Clamp(shown, 0, 1)), fill));
         }
 
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)

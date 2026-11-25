@@ -34,6 +34,46 @@ internal static partial class Native
         public IntPtr Position;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct IconInfo
+    {
+        public int IsIcon, HotspotX, HotspotY;
+        public IntPtr Mask, Color;
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetIconInfo(IntPtr icon, out IconInfo info);
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr CreateIconIndirect(ref IconInfo info);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyIcon(IntPtr icon);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteObject(IntPtr handle);
+
+    /// <summary>A mouse pointer drawn by the app, with its hot spot where it points.</summary>
+    public static Cursor CursorFrom(Bitmap picture, Point hotspot)
+    {
+        IntPtr icon = picture.GetHicon();
+        try
+        {
+            if (!GetIconInfo(icon, out IconInfo info)) return Cursors.Cross;
+            info.IsIcon = 0;
+            info.HotspotX = hotspot.X;
+            info.HotspotY = hotspot.Y;
+            IntPtr cursor = CreateIconIndirect(ref info);
+            DeleteObject(info.Mask);
+            DeleteObject(info.Color);
+            return cursor == IntPtr.Zero ? Cursors.Cross : new Cursor(cursor);
+        }
+        finally { DestroyIcon(icon); }
+    }
+
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool AllowSetForegroundWindow(int processId);

@@ -29,8 +29,17 @@ internal static class EditorModes
     static readonly RailTool Select = new(EditTool.Select, "select", "Select", Keys.V);
     static readonly RailTool Hand = new(EditTool.Hand, "hand", "Hand", Keys.H);
 
-    static readonly RailTool SelectText = new(EditTool.SelectText, "select-text", "Select Text", Keys.E);
+    // Select and Hand pick text too when dragged across it; the tool that only picks text shares Select's button,
+    // as does the one that moves the points of a shape or line.
+    static readonly RailTool SelectText = new(EditTool.SelectText, "select-text", "Select Text", Keys.None);
+    static readonly RailTool VertexSelect = new(EditTool.VertexSelect, "vertex-select", "Vertex Select", Keys.D);
     static readonly RailTool Pen = new(EditTool.Draw, "draw", "Pen", Keys.P);
+    static readonly RailTool PathPen = new(EditTool.PenPath, "pen-path", "Path Pen", Keys.B);
+    static readonly RailTool[] Erasers =
+    [
+        new(EditTool.EraseArea, "eraser", "Eraser", Keys.E),
+        new(EditTool.EraseStroke, "eraser-stroke", "Stroke Eraser", Keys.None),
+    ];
 
     /// <summary>
     /// The rail's buttons, top to bottom. A button with more than one tool shows the last one used; clicking it
@@ -40,7 +49,7 @@ internal static class EditorModes
     {
         DocumentMode.Edit =>
         [
-            [Select], [Hand], [SelectText],
+            [Select, VertexSelect, SelectText], [Hand],
             [new(EditTool.Text, "text", "Text", Keys.T)],
             [
                 new(EditTool.Rectangle, "rect", "Rectangle", Keys.R),
@@ -57,21 +66,24 @@ internal static class EditorModes
                 new(EditTool.Arrow, "arrow", "Arrow", Keys.A),
                 new(EditTool.Curve, "curve", "Curve", Keys.C),
             ],
-            [Pen],
+            [Pen, PathPen],
+            Erasers,
             [new(EditTool.Image, "image", "Image", Keys.I)],
             [
                 new(EditTool.LiftRectangle, "lift", "Lift an Area", Keys.X),
                 new(EditTool.LiftFreeform, "lasso", "Lift a Freeform Area", Keys.None),
+                new(EditTool.LiftPen, "lift-pen", "Lift with the Pen", Keys.None),
             ],
         ],
         DocumentMode.Comment =>
         [
-            [Select], [Hand], [SelectText],
+            [Select, SelectText], [Hand],
             [new(EditTool.Highlight, "highlight", "Highlight", Keys.M)],
             [new(EditTool.Underline, "underline", "Underline", Keys.U)],
             [new(EditTool.Strikeout, "strike", "Strike Through", Keys.K)],
             [new(EditTool.Note, "note", "Note", Keys.N)],
             [Pen],
+            Erasers,
         ],
         DocumentMode.Sign =>
         [
@@ -121,7 +133,7 @@ internal sealed class ToolStyles
     {
         EditTool.Text or EditTool.Date => StyleFamily.Text,
         EditTool.Rectangle or EditTool.Ellipse or EditTool.Triangle or EditTool.SemiCircle or EditTool.Pie
-            or EditTool.Heart or EditTool.Star or EditTool.Parallelogram => StyleFamily.Shape,
+            or EditTool.Heart or EditTool.Star or EditTool.Parallelogram or EditTool.PenPath => StyleFamily.Shape,
         EditTool.Line or EditTool.Arrow or EditTool.Curve => StyleFamily.Line,
         EditTool.Draw or EditTool.Check or EditTool.Cross => StyleFamily.Ink,
         EditTool.Highlight => StyleFamily.Highlight,
@@ -136,7 +148,7 @@ internal sealed class ToolStyles
     {
         MarkKind.Text => StyleFamily.Text,
         MarkKind.Rectangle or MarkKind.Ellipse or MarkKind.SemiCircle or MarkKind.Pie or MarkKind.Polygon
-            or MarkKind.Heart or MarkKind.Star or MarkKind.Parallelogram => StyleFamily.Shape,
+            or MarkKind.Heart or MarkKind.Star or MarkKind.Parallelogram or MarkKind.Path => StyleFamily.Shape,
         MarkKind.Line or MarkKind.Arrow or MarkKind.Curve or MarkKind.Spline => StyleFamily.Line,
         MarkKind.Ink => StyleFamily.Ink,
         MarkKind.Highlight => StyleFamily.Highlight,
@@ -188,6 +200,7 @@ internal sealed class ToolStyles
             case EditTool.Heart: item.Kind = MarkKind.Heart; break;
             case EditTool.Star: item.Kind = MarkKind.Star; break;
             case EditTool.Parallelogram: item.Kind = MarkKind.Parallelogram; break;
+            case EditTool.PenPath: item.Kind = MarkKind.Path; break;
             // Ends are set on a line once drawn; each line tool starts from its own.
             case EditTool.Line or EditTool.Arrow or EditTool.Curve:
                 item.Kind = tool switch { EditTool.Arrow => MarkKind.Arrow, EditTool.Curve => MarkKind.Spline, _ => MarkKind.Line };
@@ -252,6 +265,7 @@ internal sealed class ToolStyles
         MarkKind.Heart => "Heart",
         MarkKind.Star => "Star",
         MarkKind.Parallelogram => "Parallelogram",
+        MarkKind.Path => item.Closed ? "Closed path" : "Path",
         MarkKind.Line or MarkKind.Arrow => ShapeGeometry.Ends(item) == (LineEnd.None, LineEnd.None) ? "Line" : "Arrow",
         MarkKind.Ink => item.Pen switch
         {
@@ -260,6 +274,8 @@ internal sealed class ToolStyles
             PenKind.Brush => "Brush drawing",
             PenKind.Highlighter => "Highlighter",
             PenKind.Crayon => "Crayon drawing",
+            PenKind.PaintBrush => "Painting",
+            PenKind.Watercolor => "Watercolour",
             _ => "Drawing",
         },
         MarkKind.Image => "Image",
@@ -295,6 +311,7 @@ internal sealed class ToolStyles
         MarkKind.Heart => "heart",
         MarkKind.Star => "star",
         MarkKind.Parallelogram => "parallelogram",
+        MarkKind.Path => "pen-path",
         MarkKind.Line or MarkKind.Arrow => ShapeGeometry.Ends(item) == (LineEnd.None, LineEnd.None) ? "line" : "arrow",
         MarkKind.Ink => "draw",
         MarkKind.Image => "image",

@@ -28,6 +28,7 @@ internal sealed class InputBox : Panel
         _buttonHover = new Fade(this, 100);
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         Box = new TextBox { BorderStyle = BorderStyle.None, Font = AppFonts.Body, MaxLength = 200 };
+        Box.ContextMenuStrip = Menus.ForText(Box);
         Box.GotFocus += (_, _) => _focus.To(1);
         Box.LostFocus += (_, _) => _focus.To(0);
         Box.TextChanged += (_, _) => { if (Clearable) _clearShown.To(Box.TextLength > 0 ? 1 : 0); };

@@ -586,17 +586,7 @@ internal sealed class ScanPage : TabContent
     {
         if (_saving) return false;
         if (!IsDirty) return true;
-        var discard = new TaskDialogButton("Discard Pages");
-        var page = new TaskDialogPage
-        {
-            Caption = "Sheaf",
-            Heading = $"Discard {Words.Pages(_pages.Count)}?",
-            Text = "They haven’t been saved as a PDF yet.",
-            Buttons = { discard, TaskDialogButton.Cancel },
-            DefaultButton = TaskDialogButton.Cancel,
-            Icon = TaskDialogIcon.Warning,
-        };
-        return TaskDialog.ShowDialog(this, page) == discard;
+        return AskDialog.Ask(FindForm(), $"Discard {Words.Pages(_pages.Count)}?", "They haven’t been saved as a PDF yet.", "Discard Pages", safeDefault: true) == DialogResult.OK;
     }
 
     // View helpers ------------------------------------------------------------------------------

@@ -61,8 +61,10 @@ internal static class Theme
     public const int InspectorWidth = 288;
     public const int SidePanelWidth = 320;
     public const int Gutter = 32;
-    public const int MinimumWindowWidth = 1120;
-    public const int MinimumWindowHeight = 720;
+    // Small enough for a 1280 × 720 screen at 150 % (or 1366 × 768 at 175 %): the editor folds its side panels away
+    // and its bars go to icons as the window narrows.
+    public const int MinimumWindowWidth = 780;
+    public const int MinimumWindowHeight = 480;
 
     /// <summary>Colours of what people draw on pages, offered first in colour pickers.</summary>
     public static readonly Color[] InkColors =

@@ -12,7 +12,7 @@ using FormField = Sheaf.Core.Editing.FormField;
 namespace Sheaf.Pages.Document;
 
 /// <summary>A picture to edit (its path), or a blank image of a size in pixels when the path is null.</summary>
-internal sealed record ImageStart(string? Path, Size Pixels);
+internal sealed record ImageStart(string? Path, Size Pixels, int Background = unchecked((int)0xFFFFFFFF));
 
 /// <summary>
 /// A PDF in its own tab. One working document (a private copy of the file plus everything added to it) is
@@ -37,6 +37,7 @@ internal sealed class DocumentPage : TabContent
     readonly SignPanel _signPanel = new() { Dock = DockStyle.Right, Width = Theme.InspectorWidth, Visible = false };
     readonly RedactPanel _redactPanel = new() { Dock = DockStyle.Right, Width = Theme.InspectorWidth, Visible = false };
     readonly Surface _redactBar = new() { Dock = DockStyle.Top, Height = Theme.ContextBarHeight, Borders = AnchorStyles.Bottom, Visible = false };
+    readonly ColorButton _pagePaper = new("Page colour", Color.White) { AllowNone = true, LogicalHeight = 28 };
     readonly AppButton _preview = new("Preview Result", ButtonKind.Quiet, "eye") { LogicalHeight = 28, Margin = new Padding(0, 2, 4, 0) };
     readonly Dictionary<int, Task<List<List<PageWord>>>> _words = [];
     readonly StyleBar _styleBar;
@@ -47,6 +48,13 @@ internal sealed class DocumentPage : TabContent
     readonly AppButton _redo = new("", ButtonKind.Quiet, "redo") { AccessibleName = "Redo" };
     readonly AppButton _history = new("", ButtonKind.Quiet, "history") { AccessibleName = "History" };
     readonly AppButton _export = new("Export", ButtonKind.Secondary) { Chevron = true };
+    // Show or hide the page thumbnails and the panel on the right; on a narrow window they start hidden.
+    readonly AppButton _pagesToggle = new("", ButtonKind.Quiet, "panel-left") { AccessibleName = "Page Thumbnails", NeutralSelection = true };
+    readonly AppButton _sideToggle = new("", ButtonKind.Quiet, "panel-right") { AccessibleName = "Side Panel", NeutralSelection = true };
+    readonly List<(AppButton Button, string Text)> _pageBarButtons = [];
+    TextLabel? _redactHint;
+    bool? _showPages, _showSide;
+    bool _narrowPages, _narrowSide, _narrowBars, _narrowHeader;
     readonly AppButton _save = new("Save", ButtonKind.Primary);
     readonly TextLabel _status = new("", Tone.Secondary) { Font = AppFonts.Small, Dock = DockStyle.Fill, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
     readonly InputBox _zoomBox = new() { NumberRange = (DocumentCanvas.MinimumZoom, DocumentCanvas.MaximumZoom), Caption = "Zoom, in per cent", Width = 50 };
@@ -69,10 +77,11 @@ internal sealed class DocumentPage : TabContent
     bool _saving, _loaded, _failed;
     string _notice = "";
 
-    public DocumentPage(IShell shell, string? path, string? mode, ImageStart? image = null) : base(shell)
+    public DocumentPage(IShell shell, string? path, string? mode, ImageStart? image = null, BlankChoice? blank = null) : base(shell)
     {
         _path = path;
         _image = image;
+        _blank = blank;
         _mode = EditorModes.Parse(mode);
         _modeChosen = mode is not null;
         _inspector = new Inspector(_canvas) { Dock = DockStyle.Right, Width = Theme.InspectorWidth };
@@ -89,11 +98,66 @@ internal sealed class DocumentPage : TabContent
     public string ModeName => _mode.ToString().ToLowerInvariant();
 
     public override string Title => _path is not null ? Path.GetFileName(_path)
+        : _name is not null ? _name + (IsImage ? Path.GetExtension(_imageTarget ?? ".png") : ".pdf")
         : _image?.Path is { } picture ? Path.GetFileName(picture)
         : _image is not null ? "Untitled image" : "Untitled";
 
+    /// <summary>A name given to a document that isn't saved as a file yet (or an image not exported yet).</summary>
+    string? _name;
+
+    public override bool CanRename => _document is not null && !_saving;
+
+    /// <summary>
+    /// Renames the document: a saved PDF (or an exported image) is renamed in its folder, anything else takes the name
+    /// for when it is saved. A PDF's title, which browsers show, is set too.
+    /// </summary>
+    public override void Rename()
+    {
+        if (_document is null || _saving) return;
+        _canvas.CommitTextEdit();
+        string? file = IsImage ? _imageTarget : _path;
+        bool saved = file is not null && File.Exists(file);
+        string extension = file is not null ? Path.GetExtension(file) : IsImage ? ".png" : ".pdf";
+        string current = saved ? Path.GetFileNameWithoutExtension(file!) : _name ?? BaseName;
+        if (RenameDialog.Ask(FindForm(), current, extension, _document.Title, saved, pdf: !IsImage) is not var (name, title)) return;
+        if (saved && name != current)
+        {
+            string target = Path.Combine(Path.GetDirectoryName(file!)!, name + extension);
+            bool sameFile = string.Equals(target, file, StringComparison.OrdinalIgnoreCase);
+            if (!sameFile && File.Exists(target))
+            {
+                Notify($"There’s already a file called {name}{extension} in that folder. Choose another name.");
+                return;
+            }
+            try { File.Move(file!, target); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Notify($"Couldn’t rename {Path.GetFileName(file)}: {(ex is IOException ? "it is open in another app." : ex.Message)}");
+                return;
+            }
+            History.Remove(History.Entries.Where(entry => string.Equals(entry.Path, file, StringComparison.OrdinalIgnoreCase)).ToList());
+            History.Remember(target);
+            if (IsImage) _imageTarget = target; else _path = target;
+            ActivityLog.Write($"Renamed {file} to {target}");
+            Notify($"Renamed to {name}{extension}.", target);
+        }
+        else if (!saved) _name = name;
+        // Cleared, a title the file had is taken out when it is saved; none at all is left alone.
+        string? newTitle = title is null ? _document.Title : title.Length > 0 ? title : _document.Title is null ? null : "";
+        if (!IsImage && newTitle != _document.Title)
+        {
+            PushUndo();
+            _document.Title = newTitle;
+            AfterChange();
+        }
+        UpdateState();
+    }
+
     /// <summary>What this document was started from when it is an image to edit, not a PDF.</summary>
     readonly ImageStart? _image;
+
+    /// <summary>The size and paper of a new blank PDF; null for A4 and white.</summary>
+    readonly BlankChoice? _blank;
 
     /// <summary>Where the edited image was last exported, so Ctrl+S exports there again.</summary>
     string? _imageTarget;
@@ -152,14 +216,20 @@ internal sealed class DocumentPage : TabContent
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _file.Margin = new Padding(0, 0, 12, 0);
-        var left = Make.Row(_file, _modes);
+        _pagesToggle.Margin = new Padding(0, 0, 4, 0);
+        _sideToggle.Margin = new Padding(8, 0, 0, 0);
+        _pagesToggle.Click += (_, _) => { _showPages = !PagesOpen; ApplyPanels(); };
+        _sideToggle.Click += (_, _) => { _showSide = !SideOpen; ApplyPanels(); };
+        Tips.Shared.SetToolTip(_pagesToggle, "Show or hide the page thumbnails");
+        Tips.Shared.SetToolTip(_sideToggle, "Show or hide the panel on the right\nLayers, page colour, signing and redaction");
+        var left = Make.Row(_pagesToggle, _file, _modes);
         left.Anchor = AnchorStyles.Left;
         _undo.Margin = new Padding(0, 0, 2, 0);
         _redo.Margin = new Padding(0, 0, 2, 0);
         _history.Margin = new Padding(0, 0, 12, 0);
         _save.ReserveWidthFor("Saving…");
         _save.Margin = Padding.Empty;
-        var right = Make.Row(_undo, _redo, _history, _export, _save);
+        var right = Make.Row(_undo, _redo, _history, _export, _save, _sideToggle);
         right.Anchor = AnchorStyles.Right;
         layout.Controls.Add(left, 0, 0);
         layout.Controls.Add(right, 2, 0);
@@ -175,11 +245,15 @@ internal sealed class DocumentPage : TabContent
     {
         AppButton Action(string text, string icon, Action run, string? tip = null)
         {
-            var button = new AppButton(text, ButtonKind.Quiet, icon) { LogicalHeight = 28, Margin = new Padding(0, 2, 4, 0) };
+            var button = new AppButton(text, ButtonKind.Quiet, icon) { LogicalHeight = 28, Margin = new Padding(0, 2, 4, 0), AccessibleName = text };
             button.Click += (_, _) => run();
-            if (tip is not null) Tips.Shared.SetToolTip(button, tip);
+            Tips.Shared.SetToolTip(button, tip is null ? text : $"{text}\n{tip}");
+            _pageBarButtons.Add((button, text));
             return button;
         }
+        _pagePaper.Margin = new Padding(0, 2, 4, 0);
+        _pagePaper.Changed += (_, _) => PaintPages(_pagePaper.Color);
+        Tips.Shared.SetToolTip(_pagePaper, "Colours the blank pages chosen\nPages from a PDF keep their own paper");
         var size = new Slider { Minimum = 96, Maximum = 280, Width = 120, Margin = new Padding(8, 6, 0, 0), AccessibleName = "Thumbnail size" };
         size.Value = _grid.ThumbWidth;
         size.ValueChanged += (_, _) => _grid.ThumbWidth = size.Value;
@@ -195,6 +269,9 @@ internal sealed class DocumentPage : TabContent
             Action("Insert Blank Page", "file-plus", InsertBlankPage),
             Action("Insert from File…", "folder", () => _ = InsertFromFileAsync()),
             Action("Extract…", "extract", () => _ = ExtractPagesAsync()),
+            new Divider(vertical: true) { Margin = new Padding(8, 8, 8, 0) },
+            new TextLabel("Page colour", Tone.Tertiary) { Font = AppFonts.Small, Margin = new Padding(0, 9, 6, 0) },
+            _pagePaper,
             new TextLabel("Size", Tone.Tertiary) { Font = AppFonts.Small, Margin = new Padding(16, 9, 0, 0) },
             size,
         ]);
@@ -211,6 +288,7 @@ internal sealed class DocumentPage : TabContent
             _canvas.PreviewRedactions = _preview.Selected;
         };
         var hint = new TextLabel("Marks stay see-through until you apply them. Preview shows how the copy will look.", Tone.Tertiary) { Font = AppFonts.Small, Margin = new Padding(12, 9, 0, 0) };
+        _redactHint = hint;
         var row = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(12, 4, 12, 0) };
         row.Controls.AddRange([_preview, clear, new Divider(vertical: true) { Margin = new Padding(8, 8, 0, 0) }, hint]);
         _redactBar.Controls.Add(row);
@@ -261,6 +339,8 @@ internal sealed class DocumentPage : TabContent
     void WireEvents()
     {
         _canvas.NewObject = _styles.Create;
+        _canvas.EditingTools = _styleBar;
+        _canvas.EditorSelectionChanged += (_, _) => _styleBar.SyncEditing();
         _canvas.PickImage = PickImage;
         _canvas.CurrentSignature = CurrentSignature;
         _canvas.Placed += (_, item) => { if (item.Kind == MarkKind.Note) _inspector.EditComment(); };
@@ -284,6 +364,7 @@ internal sealed class DocumentPage : TabContent
         _rail.ToolChosen += (_, tool) => ChooseTool(tool, announce: true);
         _modes.Changed += (_, _) => SetMode(_modes.Value);
         _inspector.KeepEditableChanged += (_, _) => _canvas.Focus();
+        _inspector.PaperChosen += (_, color) => PaintPage(_canvas.CurrentPage, color);
 
         foreach (PageStrip strip in new[] { _strip, _grid })
         {
@@ -334,7 +415,7 @@ internal sealed class DocumentPage : TabContent
                 ImageStart? image = _image;
                 EditDocument document = await Task.Run(() => path is not null ? DocumentStore.Open(path, folder, attempt)
                     : image is not null ? ImageDocument(image, folder)
-                    : DocumentStore.CreateBlank(folder));
+                    : NewBlank(_blank, folder));
                 if (IsDisposed) return;
                 Show(document);
                 break;
@@ -414,10 +495,7 @@ internal sealed class DocumentPage : TabContent
         bool pages = mode == DocumentMode.Pages;
         bool ready = !_failed;
         _rail.Visible = !pages;
-        _pagesPanel.Visible = !pages;
-        _inspector.Visible = !pages && mode is not (DocumentMode.Sign or DocumentMode.Redact);
-        _signPanel.Visible = mode == DocumentMode.Sign;
-        _redactPanel.Visible = mode == DocumentMode.Redact;
+        ApplyPanels();
         _redactBar.Visible = mode == DocumentMode.Redact;
         _canvas.ShowFields = mode == DocumentMode.Sign;
         if (mode != DocumentMode.Redact && _preview.Selected) { _preview.Selected = false; _canvas.PreviewRedactions = false; }
@@ -445,6 +523,62 @@ internal sealed class DocumentPage : TabContent
         }
         else if (_loaded) _canvas.Focus();
         if (frozen) foreach (Control part in changing) if (part.Visible) Native.ResumeDrawing(part); else Native.EnableDrawing(part);
+    }
+
+    bool PagesOpen => _showPages ?? !_narrowPages;
+
+    bool SideOpen => _showSide ?? !_narrowSide;
+
+    /// <summary>Shows the side panels the mode has, unless the window is too narrow for them or they were hidden.</summary>
+    void ApplyPanels()
+    {
+        bool pages = _mode == DocumentMode.Pages;
+        SuspendLayout();
+        _pagesPanel.Visible = !pages && PagesOpen;
+        _inspector.Visible = !pages && _mode is not (DocumentMode.Sign or DocumentMode.Redact) && SideOpen;
+        _signPanel.Visible = _mode == DocumentMode.Sign && SideOpen;
+        _redactPanel.Visible = _mode == DocumentMode.Redact && SideOpen;
+        _pagesToggle.Selected = PagesOpen;
+        _sideToggle.Selected = SideOpen;
+        // Greyed rather than hidden in Pages: hiding them would slide the mode bar along under the pointer.
+        _pagesToggle.Enabled = _sideToggle.Enabled = !pages;
+        ResumeLayout(true);
+    }
+
+    /// <summary>
+    /// Fits the editor to the window: as it narrows, the thumbnails and then the right-hand panel fold away (the
+    /// buttons at the ends of the header bring them back), the Pages bar shows icons only, and the header drops
+    /// the buttons that have keys (Ctrl+Z, Ctrl+Y; History stays in the File menu).
+    /// </summary>
+    void FitToWidth()
+    {
+        int width = (int)Math.Round(Width * 96f / Math.Max(96, DeviceDpi));
+        if (width <= 0) return;
+        bool narrowPages = width < 1150, narrowSide = width < 940, narrowBars = width < 1120, narrowHeader = width < 900;
+        if (narrowPages != _narrowPages || narrowSide != _narrowSide)
+        {
+            _narrowPages = narrowPages;
+            _narrowSide = narrowSide;
+            ApplyPanels();
+        }
+        if (narrowBars != _narrowBars)
+        {
+            _narrowBars = narrowBars;
+            foreach (var (button, text) in _pageBarButtons) button.Text = narrowBars ? "" : text;
+            if (_redactHint is not null) _redactHint.Visible = !narrowBars;
+        }
+        if (narrowHeader != _narrowHeader)
+        {
+            _narrowHeader = narrowHeader;
+            _history.Visible = !narrowHeader;
+        }
+        _undo.Visible = _redo.Visible = width >= 840;
+    }
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        FitToWidth();
     }
 
     void ChooseTool(EditTool tool, bool announce = false)
@@ -1052,16 +1186,26 @@ internal sealed class DocumentPage : TabContent
 
     async Task InsertFromFileAsync()
     {
-        if (_document is null) return;
-        string? path = Shell.PickFiles(FileKind.Pdf, multiple: false).FirstOrDefault();
-        if (path is null) return;
-        int at = Math.Min(InsertionPoint, _document.Pages.Count);
-        var probe = new EditDocument { Sources = [.. _document.Sources] };
-        SetBusy(true, "Adding pages…");
+        // One at a time: a click while the last one is still asking does nothing.
+        if (_document is null || _inserting) return;
+        _inserting = true;
+        string? path = null;
+        bool busy = false;
         try
         {
-            IReadOnlyList<PageEntry> entries = await Task.Run(() => DocumentStore.AddSource(probe, path, _workFolder));
+            path = Shell.PickFiles(FileKind.Pdf, multiple: false).FirstOrDefault();
+            if (path is null) return;
+            int at = Math.Min(InsertionPoint, _document.Pages.Count);
+            var probe = new EditDocument { Sources = [.. _document.Sources] };
+            // Which of its pages to add, as a print dialog asks which to print; a one-page file is asked about too.
+            int count = await Task.Run(() => Core.Pdf.PdfFiles.PageCount(path));
+            if (IsDisposed || FindForm() is not { } owner) return;
+            IReadOnlyList<int>? pages = PagePickDialog.Ask(owner, Path.GetFileName(path), count);
+            if (pages is not { Count: > 0 } || _document is null) return;
+            SetBusy(busy = true, "Adding pages…");
+            IReadOnlyList<PageEntry> all = await Task.Run(() => DocumentStore.AddSource(probe, path, _workFolder));
             if (IsDisposed) return;
+            var entries = pages.Where(page => page < all.Count).Select(page => all[page]).ToList();
             _document.Sources.Add(probe.Sources[^1]);
             ChangePages(list => list.InsertRange(at, entries), () => [.. Enumerable.Range(at, entries.Count)]);
             Notify($"Added {Words.Pages(entries.Count)} from {Path.GetFileName(path)}.");
@@ -1076,9 +1220,12 @@ internal sealed class DocumentPage : TabContent
         }
         finally
         {
-            if (!IsDisposed) SetBusy(false, "");
+            _inserting = false;
+            if (busy && !IsDisposed) SetBusy(false, "");
         }
     }
+
+    bool _inserting;
 
     async Task ExtractPagesAsync()
     {
@@ -1146,13 +1293,23 @@ internal sealed class DocumentPage : TabContent
         ("Pale Blue", unchecked((int)0xFFEAF2FC)), ("Pale Green", unchecked((int)0xFFEAF6EC)), ("Black", unchecked((int)0xFF111113)),
     ];
 
+    /// <summary>Sets the paper colour of one blank page; no colour leaves it see-through.</summary>
+    void PaintPage(int page, Color color)
+    {
+        if (_document is null || page < 0 || page >= _document.Pages.Count || !_document.Pages[page].IsBlank) return;
+        int argb = color.A == 0 ? Transparent : Color.FromArgb(255, color).ToArgb();
+        if (_document.Pages[page].Background == argb) return;
+        ChangePages(list => list[page].Background = argb, () => [page]);
+        _canvas.Focus();
+    }
+
     /// <summary>Sets the paper colour of the selected blank pages (pages from a file keep their own).</summary>
     void PaintPages(Color color)
     {
         if (_document is null) return;
         var pages = SelectedPages.Where(index => _document.Pages[index].IsBlank).ToList();
         if (pages.Count == 0) return;
-        int argb = Color.FromArgb(255, color).ToArgb();
+        int argb = color.A == 0 ? Transparent : Color.FromArgb(255, color).ToArgb();
         ChangePages(list => { foreach (int index in pages) list[index].Background = argb; }, () => pages);
     }
 
@@ -1171,18 +1328,27 @@ internal sealed class DocumentPage : TabContent
     void ShowFileMenu()
     {
         var menu = Menus.Create();
-        menu.Items.Add(Menus.Item("New Blank Document", Shell.OpenBlankDocument));
+        menu.Items.Add(Menus.Item("New Blank PDF…", () =>
+        {
+            if (NewBlankDialog.Ask(FindForm(), image: false) is { } choice) Shell.OpenBlankDocument(choice);
+        }));
+        menu.Items.Add(Menus.Item("New Blank Image…", () =>
+        {
+            if (NewBlankDialog.Ask(FindForm(), image: true) is { } choice) Shell.OpenBlankDocument(choice);
+        }));
         menu.Items.Add(Menus.Item("Open…", () => { foreach (string file in Shell.PickFiles(FileKind.Pdf, multiple: true)) Shell.OpenDocument(file); }, "Ctrl+O"));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Menus.Item("Save", () => _ = SaveAsync(), "Ctrl+S"));
         menu.Items.Add(Menus.Item("Save As…", () => _ = SaveAsAsync(), "Ctrl+Shift+S"));
+        menu.Items.Add(Menus.Item("Rename…", Rename));
+        menu.Items.Add(Menus.Item("History…", ShowHistory));
         var show = Menus.Item("Show in Folder", () => Native.ShowInExplorer(_path!));
         show.Enabled = _path is not null && File.Exists(_path);
         menu.Items.Add(show);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Menus.Item("Insert Blank Page", InsertBlankPage));
         menu.Items.Add(Menus.Item("Insert Pages from a File…", () => _ = InsertFromFileAsync()));
-        foreach (ToolStripItem item in menu.Items) item.Enabled &= _document is not null || item.Text is "New Blank Document" or "Open…";
+        foreach (ToolStripItem item in menu.Items) item.Enabled &= _document is not null || item.Text is "New Blank PDF…" or "New Blank Image…" or "Open…";
         menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
         Menus.Show(menu, _file, Menus.Below(_file));
     }
@@ -1211,6 +1377,7 @@ internal sealed class DocumentPage : TabContent
     // Saving ------------------------------------------------------------------------------------
 
     string BaseName => _path is not null ? Path.GetFileNameWithoutExtension(_path)
+        : _name is not null ? _name
         : _image?.Path is { } picture ? Path.GetFileNameWithoutExtension(picture) + " (edited)"
         : _image is not null ? "Untitled image" : "Untitled";
 
@@ -1223,16 +1390,81 @@ internal sealed class DocumentPage : TabContent
     {
         byte[]? data = start.Path is null ? null : ImageLook.Fit(File.ReadAllBytes(start.Path));
         Size pixels = start.Pixels;
+        bool seeThrough = start.Background >> 24 == 0;
         if (data is not null)
-            using (var picture = Image.FromStream(new MemoryStream(data))) pixels = picture.Size;
+            using (var picture = Image.FromStream(new MemoryStream(data)))
+            {
+                pixels = picture.Size;
+                // A picture with see-through parts keeps them: nothing behind it, so it exports as it came in.
+                seeThrough = picture is Bitmap bitmap && HasSeeThroughPixels(bitmap);
+            }
         float width = Math.Max(1, pixels.Width) * 0.75f, height = Math.Max(1, pixels.Height) * 0.75f;
         EditDocument document = DocumentStore.CreateBlank(folder, width, height);
+        document.Pages[0].Background = seeThrough ? Transparent : data is null ? start.Background : White;
         if (data is not null)
             document.Pages[0].Objects.Add(new PageObject { Kind = MarkKind.Image, ImageData = data, Bounds = new RectangleF(0, 0, width, height) });
         return document;
     }
 
+    const int White = unchecked((int)0xFFFFFFFF), Transparent = 0x00FFFFFF;
+
+    static EditDocument NewBlank(BlankChoice? blank, string folder)
+    {
+        if (blank is null) return DocumentStore.CreateBlank(folder);
+        EditDocument document = DocumentStore.CreateBlank(folder, blank.Size.Width, blank.Size.Height);
+        document.Pages[0].Background = blank.Background;
+        return document;
+    }
+
+    /// <summary>Whether any pixel of a picture is less than solid (a PNG can carry alpha and use none of it).</summary>
+    static bool HasSeeThroughPixels(Bitmap picture)
+    {
+        if (!Image.IsAlphaPixelFormat(picture.PixelFormat)) return false;
+        var area = new Rectangle(0, 0, picture.Width, picture.Height);
+        System.Drawing.Imaging.BitmapData data = picture.LockBits(area, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        try
+        {
+            var row = new byte[picture.Width * 4];
+            for (int y = 0; y < picture.Height; y++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
+                for (int x = 3; x < row.Length; x += 4)
+                    if (row[x] < 255) return true;
+            }
+            return false;
+        }
+        finally { picture.UnlockBits(data); }
+    }
+
     const string ImageFilter = "PNG image (*.png)|*.png|JPEG image (*.jpg)|*.jpg;*.jpeg";
+
+    /// <summary>
+    /// A page of an image document drawn at its own size in pixels, objects and all. A PNG keeps what has nothing
+    /// behind it see-through; a JPEG can't, so it gets white there.
+    /// </summary>
+    static Bitmap RenderImagePage(PageEntry entry, bool seeThrough)
+    {
+        int width = Math.Max(1, (int)Math.Round(entry.Width / 0.75f)), height = Math.Max(1, (int)Math.Round(entry.Height / 0.75f));
+        var bitmap = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        bitmap.SetResolution(96, 96);
+        using Graphics g = Graphics.FromImage(bitmap);
+        g.Clear(seeThrough ? Color.Transparent : Color.White);
+        PagePainter.DrawPage(g, entry, null, new RectangleF(0, 0, width, height), export: true);
+        return bitmap;
+    }
+
+    static void SaveImage(Bitmap bitmap, string path, bool jpeg)
+    {
+        if (!jpeg)
+        {
+            bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            return;
+        }
+        System.Drawing.Imaging.ImageCodecInfo codec = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
+        using var quality = new System.Drawing.Imaging.EncoderParameters(1);
+        quality.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+        bitmap.Save(path, codec, quality);
+    }
 
     static bool IsImageFile(string path) => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg";
 
@@ -1261,17 +1493,32 @@ internal sealed class DocumentPage : TabContent
         string temp = Path.Combine(_workFolder, $"export-{Guid.NewGuid():N}.pdf");
         try
         {
-            await Task.Run(() => DocumentStore.Save(snapshot, temp, keepEditable: false));
-            using PdfPreview preview = await PdfPreview.OpenAsync(temp);
-            var format = Path.GetExtension(target).ToLowerInvariant() is ".jpg" or ".jpeg" ? PageImageFormat.Jpeg : PageImageFormat.Png;
-            int dpi = IsImage ? 96 : 200;
+            bool jpeg = Path.GetExtension(target).ToLowerInvariant() is ".jpg" or ".jpeg";
+            string PathFor(int i, int count) => count == 1 ? target
+                : Path.Combine(Path.GetDirectoryName(target)!, $"{Path.GetFileNameWithoutExtension(target)}-{i + 1}{Path.GetExtension(target)}");
             var written = new List<string>();
-            for (int i = 0; i < preview.PageCount; i++)
+            if (IsImage)
             {
-                string path = preview.PageCount == 1 ? target
-                    : Path.Combine(Path.GetDirectoryName(target)!, $"{Path.GetFileNameWithoutExtension(target)}-{i + 1}{Path.GetExtension(target)}");
-                await preview.SaveImageAsync(i, path, format, dpi);
-                written.Add(path);
+                // Drawn here at the picture's own size rather than through a PDF, so a PNG keeps see-through parts.
+                for (int i = 0; i < snapshot.Pages.Count; i++)
+                {
+                    PageEntry entry = snapshot.Pages[i];
+                    using Bitmap picture = RenderImagePage(entry, seeThrough: !jpeg);
+                    string path = PathFor(i, snapshot.Pages.Count);
+                    await Task.Run(() => SaveImage(picture, path, jpeg));
+                    written.Add(path);
+                }
+            }
+            else
+            {
+                await Task.Run(() => DocumentStore.Save(snapshot, temp, keepEditable: false));
+                using PdfPreview preview = await PdfPreview.OpenAsync(temp);
+                for (int i = 0; i < preview.PageCount; i++)
+                {
+                    string path = PathFor(i, preview.PageCount);
+                    await preview.SaveImageAsync(i, path, jpeg ? PageImageFormat.Jpeg : PageImageFormat.Png, 200);
+                    written.Add(path);
+                }
             }
             if (IsImage)
             {
@@ -1283,7 +1530,7 @@ internal sealed class DocumentPage : TabContent
             Notify(written.Count == 1 ? $"Exported {Path.GetFileName(target)}." : $"Exported {written.Count} images next to {Path.GetFileName(target)}.", target);
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException or System.Runtime.InteropServices.COMException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException or System.Runtime.InteropServices.ExternalException)
         {
             ActivityLog.Error($"exporting {target}", ex);
             Notify($"Couldn’t export {Path.GetFileName(target)}: {ex.Message}");
@@ -1411,13 +1658,7 @@ internal sealed class DocumentPage : TabContent
         catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException)
         {
             ActivityLog.Error($"saving {target} on close", ex);
-            TaskDialog.ShowDialog(this, new TaskDialogPage
-            {
-                Caption = "Sheaf",
-                Heading = $"Couldn’t save {Path.GetFileName(target)}",
-                Text = ex.Message,
-                Icon = TaskDialogIcon.Error,
-            });
+            AskDialog.Tell(FindForm(), $"Couldn’t Save {Path.GetFileName(target)}", ex.Message);
             return false;
         }
         finally
@@ -1431,30 +1672,13 @@ internal sealed class DocumentPage : TabContent
     {
         if (_saving)
         {
-            TaskDialog.ShowDialog(this, new TaskDialogPage
-            {
-                Caption = "Sheaf",
-                Heading = "Sheaf is still saving this file",
-                Text = "Wait a moment for it to finish, then close the tab.",
-                Icon = TaskDialogIcon.Information,
-            });
+            AskDialog.Tell(FindForm(), "Still Saving", "Sheaf is still saving this file. Wait a moment for it to finish, then close the tab.");
             return false;
         }
         if (!IsDirty) return true;
-        var save = new TaskDialogButton("Save");
-        var discard = new TaskDialogButton("Don’t Save");
-        var page = new TaskDialogPage
-        {
-            Caption = "Sheaf",
-            Heading = $"Save changes to {Title}?",
-            Text = "Your changes are lost if you don’t save them.",
-            Buttons = { save, discard, TaskDialogButton.Cancel },
-            DefaultButton = save,
-            Icon = TaskDialogIcon.Warning,
-        };
-        TaskDialogButton answer = TaskDialog.ShowDialog(this, page);
-        if (answer == discard) return true;
-        return answer == save && SaveBeforeClose();
+        DialogResult answer = AskDialog.Ask(FindForm(), $"Save Changes to {Title}?", "Your changes are lost if you don’t save them.", "Save", other: "Don’t Save");
+        if (answer == DialogResult.No) return true;
+        return answer == DialogResult.OK && SaveBeforeClose();
     }
 
     // Status ------------------------------------------------------------------------------------

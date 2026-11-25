@@ -23,4 +23,17 @@
     <None Include="..\Sheaf.Core\Assets\Licenses\*.txt" Link="Licenses\%(Filename).txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
 
+  <!--
+    Signs the published exe when a code signing certificate is named by its thumbprint:
+      dotnet publish src\Sheaf\Sheaf.csproj -p:PublishProfile=FolderProfile -p:SignCertificate=<thumbprint>
+    Needs signtool from the Windows SDK on PATH, or SignTool set to its full path.
+  -->
+  <Target Name="SignPublishedExe" AfterTargets="Publish" Condition="'$(SignCertificate)' != ''">
+    <PropertyGroup>
+      <SignTool Condition="'$(SignTool)' == ''">signtool</SignTool>
+      <SignTimestamp Condition="'$(SignTimestamp)' == ''">http://timestamp.digicert.com</SignTimestamp>
+    </PropertyGroup>
+    <Exec Command="&quot;$(SignTool)&quot; sign /sha1 $(SignCertificate) /fd SHA256 /tr $(SignTimestamp) /td SHA256 /d Sheaf &quot;$(PublishDir)$(AssemblyName).exe&quot;" />
+  </Target>
+
 </Project>

@@ -25,8 +25,22 @@ internal sealed class Inspector : Surface
     readonly AppButton _duplicate = LayerButton("copy", "Duplicate");
     readonly AppButton _remove = LayerButton("trash", "Delete");
     readonly TableLayoutPanel _geometry;
+    // In the same place when nothing is chosen: the colour of the page in view.
+    readonly TableLayoutPanel _pageSection;
+    readonly ColorButton _paper = new("Page colour", Color.White) { AllowNone = true, LogicalHeight = 32 };
+    readonly WrapLabel _paperHint = Make.Hint("");
     readonly TableLayoutPanel _commentSection;
     readonly TableLayoutPanel _savingSection;
+    readonly Control _savingHint;
+
+    /// <summary>On a short window the explanation under "When saving" goes, leaving the layers more room.</summary>
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        if (_savingHint is null) return;
+        int height = (int)Math.Round(Height * 96f / Math.Max(96, DeviceDpi));
+        _savingHint.Visible = height <= 0 || height >= 560;
+    }
     readonly TextLabel _layersHeading = Make.PanelHeading("Layers");
     readonly InputBox _x = Coordinate("X"), _y = Coordinate("Y"), _w = Coordinate("Width"), _h = Coordinate("Height");
     readonly TextBox _comment = new() { Multiline = true, BorderStyle = BorderStyle.None, Height = 72, Dock = DockStyle.Fill, AccessibleName = "Comment", ScrollBars = ScrollBars.Vertical };
@@ -46,10 +60,17 @@ internal sealed class Inspector : Surface
         AccessibleRole = AccessibleRole.Pane;
         AccessibleName = "Properties";
 
+        _comment.ContextMenuStrip = Menus.ForText(_comment);
         _geometry = Make.PanelSection("Position and size", GeometryGrid());
+        _paper.Anchor = AnchorStyles.Left;
+        _pageSection = Make.PanelSection("Page colour", _paper, _paperHint);
+        _pageSection.Dock = DockStyle.Bottom;
+        _pageSection.Visible = false;
+        Tips.Shared.SetToolTip(_paper, "The colour of this blank page\nNone leaves an image see-through");
+        _paper.Changed += (_, _) => { if (!_syncing) PaperChosen?.Invoke(this, _paper.Color); };
         _commentSection = Make.PanelSection("Comment", CommentBox());
-        _savingSection = Make.PanelSection("When saving", _keepEditable,
-            Make.Hint("Keep editable stores what you added so Sheaf can change it later. Every app shows it either way."));
+        _savingHint = Make.Hint("Keep editable stores what you added so Sheaf can change it later. Every app shows it either way.");
+        _savingSection = Make.PanelSection("When saving", _keepEditable, _savingHint);
         var layersHeader = Make.Stack(_layersHeading);
         layersHeader.Dock = DockStyle.Top;
         layersHeader.Padding = new Padding(16, 14, 16, 0);
@@ -65,6 +86,7 @@ internal sealed class Inspector : Surface
         _properties.Controls.Add(Rule(DockStyle.Bottom));
         _properties.Controls.Add(_commentSection);
         _properties.Controls.Add(_geometry);
+        _properties.Controls.Add(_pageSection);
         _properties.Controls.Add(layersHeader);
         _properties.Controls.Add(Rule());
         _properties.Controls.Add(_savingSection);
@@ -83,6 +105,11 @@ internal sealed class Inspector : Surface
         _layers.EmptyClicked += (_, _) => _canvas.ClearSelection();
         _layers.MenuRequested += (_, request) => ShowLayerMenu(request.Row, request.At);
         _layers.ActionClicked += (_, row) => ToggleHidden(row);
+        _layers.LockClicked += (_, row) =>
+        {
+            _canvas.SetLocked(row.Objects, !row.Objects.All(item => item.Locked));
+            Sync();
+        };
         _layers.Dropped += (_, drop) => DropLayers(drop.Rows, drop.Before, drop.Into);
         _layers.FoldToggled += (_, row) =>
         {
@@ -91,16 +118,16 @@ internal sealed class Inspector : Surface
             Sync();
         };
         _layers.DeleteRequested += (_, _) => _canvas.DeleteSelection();
+        Tips.Shared.SetToolTip(_newGroup, "New group from selection (Ctrl+G)\nChoose two or more layers first: Ctrl+click or Shift+click them");
+        Tips.Shared.SetToolTip(_ungroup, "Ungroup (Ctrl+Shift+G)\nChoose a group first");
+        Tips.Shared.SetToolTip(_hide, "Hide or show\nChoose a layer first");
+        Tips.Shared.SetToolTip(_duplicate, "Duplicate (Ctrl+D)\nChoose a layer first");
+        Tips.Shared.SetToolTip(_remove, "Delete (Del)\nChoose a layer first");
         _newGroup.Click += (_, _) => _canvas.GroupSelection();
         _ungroup.Click += (_, _) => _canvas.UngroupSelection();
         _hide.Click += (_, _) => { if (_canvas.Selection.Count > 0) ToggleHidden(new ObjectRow(LayersPage, _canvas.Selection[0], "", "", [.. _canvas.Selection])); };
         _duplicate.Click += (_, _) => _canvas.DuplicateSelection();
         _remove.Click += (_, _) => _canvas.DeleteSelection();
-        Tips.Shared.SetToolTip(_newGroup, "New group from the selection (Ctrl+G)");
-        Tips.Shared.SetToolTip(_ungroup, "Ungroup (Ctrl+Shift+G)");
-        Tips.Shared.SetToolTip(_hide, "Hide or show");
-        Tips.Shared.SetToolTip(_duplicate, "Duplicate (Ctrl+D)");
-        Tips.Shared.SetToolTip(_remove, "Delete (Del)");
         _comments.Picked += (_, row) => { _canvas.Reveal(row.Page, row.Item); };
         foreach (InputBox input in new[] { _x, _y, _w, _h })
         {
@@ -180,6 +207,9 @@ internal sealed class Inspector : Surface
     }
 
     /// <summary>Refreshes everything from the canvas: the selection, the page it shows and the document.</summary>
+    /// <summary>A colour was chosen for the page in view (none: see-through).</summary>
+    public event EventHandler<Color>? PaperChosen;
+
     public void Sync()
     {
         if (_canvas.Document is not { } document) return;
@@ -187,6 +217,20 @@ internal sealed class Inspector : Surface
         SuspendLayout();
         IReadOnlyList<PageObject> selection = _canvas.Selection;
         PageObject? single = selection.Count == 1 ? selection[0] : null;
+
+        // With nothing chosen, the strip under the layers holds the page's colour instead of a position.
+        bool nothing = selection.Count == 0 && _canvas.CurrentPage < document.Pages.Count;
+        if (nothing)
+        {
+            PageEntry entry = document.Pages[_canvas.CurrentPage];
+            _paper.Enabled = entry.IsBlank;
+            _paper.Color = entry.IsBlank ? Color.FromArgb(entry.Background) : Color.White;
+            _paperHint.Text = entry.IsBlank ? $"Page {_canvas.CurrentPage + 1}. Right-click pages in the strip to colour several."
+                : "Pages from a PDF keep their own paper. Add a blank page (the + by Pages) to choose its colour.";
+        }
+        if (_geometry.Height > 0) _pageSection.MinimumSize = new Size(0, _geometry.Height);
+        _pageSection.Visible = nothing;
+        _geometry.Visible = !nothing;
 
         // Always there, so the layers above never move; usable when one object (not a note) is chosen.
         bool placeable = single is not null && single.Kind != MarkKind.Note;
@@ -310,7 +354,12 @@ internal sealed class Inspector : Surface
         bool hidden = row.Objects.All(item => item.Hidden);
         var menu = Menus.Create();
         menu.ShowImageMargin = false;
+        bool locked = row.Objects.All(item => item.Locked);
         menu.Items.Add(Menus.Item(hidden ? "Show" : "Hide", () => ToggleHidden(row)));
+        menu.Items.Add(Menus.Item(locked ? "Unlock" : "Lock", () => { _canvas.SetLocked(row.Objects, !locked); Sync(); }));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(Menus.Item("Cut", _canvas.Cut, "Ctrl+X"));
+        menu.Items.Add(Menus.Item("Copy", _canvas.Copy, "Ctrl+C"));
         menu.Items.Add(Menus.Item(count > 1 ? $"Duplicate {count} Objects" : "Duplicate", _canvas.DuplicateSelection, "Ctrl+D"));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Menus.Item("Bring to Front", () => _canvas.Arrange(toFront: true)));

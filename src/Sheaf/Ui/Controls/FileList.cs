@@ -197,6 +197,19 @@ internal sealed class FileList : ListBox
     /// <summary>The list box is native, so its empty state is painted after Windows has drawn the background.</summary>
     protected override void WndProc(ref Message m)
     {
+        const int WM_LBUTTONDOWN = 0x0201, WM_RBUTTONDOWN = 0x0204;
+        if (m.Msg is WM_LBUTTONDOWN or WM_RBUTTONDOWN && Items.Count > 0)
+        {
+            // A click on the empty space below the files lets go of the selection (a list box would pick the last row).
+            var point = new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16)));
+            int index = IndexFromPoint(point);
+            if (index < 0 || !GetItemRectangle(index).Contains(point))
+            {
+                Focus();
+                ClearSelected();
+                return;
+            }
+        }
         base.WndProc(ref m);
         if (m.Msg != WM_PAINT || Items.Count > 0 || EmptyText.Length == 0) return;
         using Graphics g = CreateGraphics();
@@ -216,6 +229,7 @@ internal sealed class FileList : ListBox
     protected override void OnKeyDown(KeyEventArgs e)
     {
         if (e.KeyCode == Keys.Delete) { RemoveRequested?.Invoke(this, EventArgs.Empty); e.Handled = true; }
+        else if (e.KeyCode == Keys.Escape && SelectedIndices.Count > 0) { ClearSelected(); e.Handled = true; }
         else if (e.Alt && e.KeyCode is Keys.Up or Keys.Down) { MoveSelected(e.KeyCode == Keys.Up ? -1 : 1); e.Handled = true; }
         else if (e.Control && e.KeyCode == Keys.A) { for (int i = 0; i < Items.Count; i++) SetSelected(i, true); e.Handled = true; }
         base.OnKeyDown(e);

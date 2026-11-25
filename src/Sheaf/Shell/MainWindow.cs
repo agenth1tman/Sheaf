@@ -48,6 +48,7 @@ internal sealed class MainWindow : Form, IShell
         AddTab(new TabItem("Home", "home", _home) { IsPinned = true }, select: true);
 
         _titleBar.CloseRequested += (_, tab) => CloseTab(tab);
+        _titleBar.RenameRequested += (_, tab) => { if (tab.Page is TabContent { CanRename: true } page) page.Rename(); };
         _titleBar.NewTabRequested += (_, _) => NewTab();
         _titleBar.SettingsRequested += (_, _) => OpenSettings();
         Theme.Changed += (_, _) => Invalidate(true);
@@ -121,12 +122,34 @@ internal sealed class MainWindow : Form, IShell
 
     void RestoreWindowBounds()
     {
-        if (!_settings.HasWindowBounds) return;
-        var bounds = new Rectangle(_settings.WindowX, _settings.WindowY, _settings.WindowWidth, _settings.WindowHeight);
-        if (!Screen.AllScreens.Any(screen => screen.WorkingArea.IntersectsWith(bounds))) return;
-        StartPosition = FormStartPosition.Manual;
-        Bounds = bounds;
-        if (_settings.WindowMaximized) WindowState = FormWindowState.Maximized;
+        if (_settings.HasWindowBounds)
+        {
+            var bounds = new Rectangle(_settings.WindowX, _settings.WindowY, _settings.WindowWidth, _settings.WindowHeight);
+            if (Screen.AllScreens.Any(screen => screen.WorkingArea.IntersectsWith(bounds)))
+            {
+                StartPosition = FormStartPosition.Manual;
+                Bounds = FitOnScreen(bounds);
+                if (_settings.WindowMaximized) WindowState = FormWindowState.Maximized;
+                return;
+            }
+        }
+        // First run: the usual size, unless the screen is smaller (a laptop at 125 % or more); then the whole screen.
+        Rectangle area = Screen.FromPoint(Cursor.Position).WorkingArea;
+        if (Width > area.Width * 0.92 || Height > area.Height * 0.92)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Bounds = FitOnScreen(Bounds);
+            WindowState = FormWindowState.Maximized;
+        }
+    }
+
+    /// <summary>A window's bounds made to fit on the screen it is on, so no part of it is out of reach.</summary>
+    static Rectangle FitOnScreen(Rectangle bounds)
+    {
+        Rectangle area = Screen.FromRectangle(bounds).WorkingArea;
+        int width = Math.Min(bounds.Width, area.Width), height = Math.Min(bounds.Height, area.Height);
+        int x = Math.Clamp(bounds.X, area.Left, area.Right - width), y = Math.Clamp(bounds.Y, area.Top, area.Bottom - height);
+        return new Rectangle(x, y, width, height);
     }
 
     public void OpenFromLaunch(IReadOnlyList<string> files, string? toolId)
@@ -268,7 +291,11 @@ internal sealed class MainWindow : Form, IShell
         History.Remember(full);
     }
 
-    public void OpenBlankDocument() => Open(new DocumentPage(this, null, null));
+    public void OpenBlankDocument(BlankChoice? choice = null)
+    {
+        if (choice is { IsImage: true }) Open(new DocumentPage(this, null, null, new ImageStart(null, Size.Round(choice.Size), choice.Background)));
+        else Open(new DocumentPage(this, null, null, blank: choice));
+    }
 
     public void OpenImageDocument(string? path, Size pixels)
     {

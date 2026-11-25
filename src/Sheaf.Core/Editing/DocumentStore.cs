@@ -35,7 +35,8 @@ public static class DocumentStore
         return new EditDocument
         {
             Sources = [basePath],
-            Pages = [new PageEntry { Source = 0, SourcePage = 0, Width = width, Height = height }],
+            // A blank page of its own, so its paper colour can be chosen like that of any blank page.
+            Pages = [new PageEntry { Source = 0, SourcePage = -1, Width = width, Height = height }],
         };
     }
 
@@ -64,6 +65,7 @@ public static class DocumentStore
                     Objects = TakeStoredObjects(page),
                 });
             }
+            document.Title = string.IsNullOrWhiteSpace(pdf.Info.Title) ? null : pdf.Info.Title;
             document.Fields = FormFields.Read(pdf);
             document.FieldValues = document.Fields.ToDictionary(field => field.Name, field => field.Value);
             if (password is not null) PdfSecurity.RemoveProtection(pdf);
@@ -107,7 +109,7 @@ public static class DocumentStore
                 PdfPage page = pages[i];
                 // Before the objects go on, so they aren't mirrored with it.
                 PageOps.Mirror(page, entry.MirrorX, entry.MirrorY);
-                if (entry.IsBlank && entry.Background != unchecked((int)0xFFFFFFFF)) PageOps.Paint(page, System.Drawing.Color.FromArgb(entry.Background));
+                if (entry.IsBlank && entry.Background != unchecked((int)0xFFFFFFFF) && entry.Background >> 24 != 0) PageOps.Paint(page, System.Drawing.Color.FromArgb(entry.Background));
                 var visible = entry.Objects.Where(o => !o.Hidden).ToList();
                 if (visible.Count > 0)
                 {
@@ -118,6 +120,12 @@ public static class DocumentStore
                 page.Rotate = PageOps.NormalizeRotation(page.Rotate + entry.Rotation);
             }
             FormFields.Apply(output, document.ChangedFieldValues());
+            if (document.Title is { } title)
+            {
+                output.Info.Title = title;
+                // Readers and browsers then show the title in their tab instead of the file name.
+                output.ViewerPreferences.DisplayDocTitle = title.Length > 0;
+            }
             if (document.Password is { } password) PdfSecurity.Protect(output, password);
             PdfFiles.Save(output, path);
         }

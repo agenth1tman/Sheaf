@@ -11,6 +11,9 @@ internal class DialogForm : Form
     readonly TableLayoutPanel _layout;
     readonly FlowLayoutPanel _buttons;
 
+    /// <summary>Takes the keyboard when a click lands on the dialog's background, so a text box is left by clicking away from it.</summary>
+    readonly Control _focusSink = new() { Size = Size.Empty, TabStop = false, AccessibleRole = AccessibleRole.Pane };
+
     protected DialogForm(string title, string? explanation, int width = 420)
     {
         AutoScaleDimensions = new SizeF(96F, 96F);
@@ -42,6 +45,7 @@ internal class DialogForm : Form
             WrapContents = false,
         };
         Controls.Add(_layout);
+        Controls.Add(_focusSink);
     }
 
     public override Color BackColor
@@ -63,22 +67,37 @@ internal class DialogForm : Form
         _layout.Controls.Add(control);
     }
 
-    /// <summary>Adds the buttons, main one first; the main one closes with OK unless <paramref name="accept"/> says otherwise.</summary>
-    protected AppButton AddButtons(string primary, Func<bool>? accept = null, string cancel = "Cancel")
+    /// <summary>
+    /// Adds the buttons, main one first; the main one closes with OK unless <paramref name="accept"/> says otherwise.
+    /// Without a <paramref name="cancel"/> button, Escape closes the dialog as the main one does.
+    /// </summary>
+    protected AppButton AddButtons(string primary, Func<bool>? accept = null, string? cancel = "Cancel")
     {
         var ok = new AppButton(primary, ButtonKind.Primary) { Margin = Padding.Empty };
-        var no = new AppButton(cancel, ButtonKind.Secondary) { Margin = new Padding(0, 0, 8, 0), DialogResult = DialogResult.Cancel };
         ok.Click += (_, _) =>
         {
             if (accept is not null && !accept()) return;
             DialogResult = DialogResult.OK;
         };
         _buttons.Controls.Add(ok);
-        _buttons.Controls.Add(no);
-        _layout.Controls.Add(_buttons);
         AcceptButton = ok;
-        CancelButton = no;
+        CancelButton = ok;
+        if (cancel is not null)
+        {
+            var no = new AppButton(cancel, ButtonKind.Secondary) { Margin = new Padding(0, 0, 8, 0), DialogResult = DialogResult.Cancel };
+            _buttons.Controls.Add(no);
+            CancelButton = no;
+        }
+        _layout.Controls.Add(_buttons);
         return ok;
+    }
+
+    /// <summary>Adds another answer, to the left of the others, that closes the dialog with <paramref name="result"/>.</summary>
+    protected AppButton AddButton(string text, DialogResult result)
+    {
+        var button = new AppButton(text, ButtonKind.Secondary) { Margin = new Padding(0, 0, 8, 0), DialogResult = result };
+        _buttons.Controls.Add(button);
+        return button;
     }
 
     /// <summary>The window wraps the content (which grows when an error line appears).</summary>
@@ -90,13 +109,54 @@ internal class DialogForm : Form
         base.OnLoad(e);
         _layout.Location = new Point(Padding.Left, Padding.Top);
         FitToContent();
+        LeaveFieldsOnClick(this);
     }
+
+    /// <summary>A click on anything that isn't a control of its own (the background, headings, captions) leaves a text box.</summary>
+    void LeaveFieldsOnClick(Control parent)
+    {
+        parent.MouseDown += (_, _) => { if (Typing(this)) _focusSink.Focus(); };
+        foreach (Control child in parent.Controls)
+            if (child is not (InputBox or TextBoxBase or ButtonBase)) LeaveFieldsOnClick(child);
+    }
+
+    static bool Typing(Control control) => control is TextBoxBase { Focused: true } || control.Controls.Cast<Control>().Any(Typing);
 
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
         Native.SetDarkTitleBar(Handle, Theme.IsDark);
     }
+}
+
+/// <summary>
+/// A question or a notice in Sheaf's style, in place of Windows' own message box: a heading, a line of detail, and up
+/// to three answers: the main one (OK), another (No) and Cancel.
+/// </summary>
+internal sealed class AskDialog : DialogForm
+{
+    AskDialog(string heading, string text, string primary, string? cancel, string? other, bool safeDefault)
+        : base(heading, text, 400)
+    {
+        AddButtons(primary, cancel: cancel);
+        if (other is not null) AddButton(other, DialogResult.No);
+        // For an answer that can't be taken back, Enter means Cancel; the main button needs a click.
+        if (safeDefault && CancelButton is AppButton safe)
+        {
+            AcceptButton = safe;
+            Shown += (_, _) => safe.Focus();
+        }
+    }
+
+    /// <summary>OK for the main answer, No for the other one, Cancel for Cancel, Escape or the close box.</summary>
+    public static DialogResult Ask(IWin32Window? owner, string heading, string text, string primary, string? cancel = "Cancel", string? other = null, bool safeDefault = false)
+    {
+        using var dialog = new AskDialog(heading, text, primary, cancel, other, safeDefault);
+        return dialog.ShowDialog(owner);
+    }
+
+    /// <summary>A notice with one button.</summary>
+    public static void Tell(IWin32Window? owner, string heading, string text) => Ask(owner, heading, text, "OK", cancel: null);
 }
 
 /// <summary>Asks for the password of a protected PDF.</summary>

@@ -29,6 +29,7 @@ internal sealed class StyleBar : Surface
     readonly SliderDrop _size = new("Font size", 4, 144, 1, Points, 8, 10, 12, 14, 18, 24, 36, 48, 72);
     readonly AppButton _bold = Toggle("bold", "Bold");
     readonly AppButton _italic = Toggle("italic", "Italic");
+    readonly AppButton _underline = Toggle("underline", "Underline");
     readonly AppButton _left = Toggle("align-left", "Align Left");
     readonly AppButton _center = Toggle("align-center", "Centre");
     readonly AppButton _right = Toggle("align-right", "Align Right");
@@ -40,6 +41,8 @@ internal sealed class StyleBar : Surface
     readonly DropDown<LineEnd> _startEnd = new("Start of the line", EndChoices) { LogicalHeight = 28 };
     readonly DropDown<LineEnd> _endEnd = new("End of the line", EndChoices) { LogicalHeight = 28 };
     readonly PenPicker _pens = new();
+    readonly TextLabel _eraserCaption = Caption("Size");
+    readonly SliderDrop _eraserSize = new("Eraser size", 2, 120, 1, Points, 4, 8, 16, 32, 64);
     readonly TextLabel _sweepCaption = Caption("Angle");
     readonly SliderDrop _sweep = new("Pie angle", 10, 350, 5, angle => $"{angle:0}°", 90, 180, 270, 300);
     readonly Divider _split5 = new(vertical: true);
@@ -76,7 +79,9 @@ internal sealed class StyleBar : Surface
     readonly AppButton _backward = Icon("send-backward", "Send Backward");
     readonly AppButton _toBack = Icon("send-back", "Send to Back");
     readonly Divider _split6 = new(vertical: true), _split7 = new(vertical: true), _split8 = new(vertical: true);
-    readonly AppButton _duplicate = new("Duplicate", ButtonKind.Quiet, "copy") { LogicalHeight = 28 };
+    readonly AppButton _cut = Icon("cut", "Cut");
+    readonly AppButton _copy = Icon("copy", "Copy");
+    readonly AppButton _duplicate = new("Duplicate", ButtonKind.Quiet, "duplicate") { LogicalHeight = 28 };
     readonly AppButton _delete = new("", ButtonKind.Quiet, "trash") { LogicalHeight = 28, AccessibleName = "Delete" };
     readonly Divider _split1 = new(vertical: true), _split2 = new(vertical: true), _split3 = new(vertical: true), _split4 = new(vertical: true);
     StyleFamily _family;
@@ -101,6 +106,12 @@ internal sealed class StyleBar : Surface
         _startEnd.ReserveWidthFor("Triangle");
         _endEnd.ReserveWidthFor("Triangle");
         _angle.LogicalHeight = 28;
+        _eraserSize.LogicalHeight = 28;
+        _eraserSize.ReserveWidthFor("120 pt");
+        _eraserSize.Value = _canvas.EraserSize;
+        _eraserSize.Changed += (_, _) => _canvas.EraserSize = _eraserSize.Value;
+        _eraserCaption.Margin = new Padding(0, 9, 6, 0);
+        _eraserSize.Margin = new Padding(0, 2, 12, 0);
         _angle.ReserveWidthFor("-180°");
         _sweep.ReserveWidthFor("350°");
         _corners.ReserveWidthFor("Square");
@@ -112,6 +123,8 @@ internal sealed class StyleBar : Surface
         foreach (Divider divider in new[] { _split1, _split2, _split3, _split4, _split5, _split6, _split7, _split8 }) divider.Margin = new Padding(8, 8, 8, 0);
         Tips.Shared.SetToolTip(_delete, "Delete (Del)");
         Tips.Shared.SetToolTip(_duplicate, "Duplicate (Ctrl+D)");
+        Tips.Shared.SetToolTip(_cut, "Cut (Ctrl+X)");
+        Tips.Shared.SetToolTip(_copy, "Copy (Ctrl+C)\nPaste with Ctrl+V on any page, or right-click the page");
         Tips.Shared.SetToolTip(_turnLeft, "Turn left 90°");
         Tips.Shared.SetToolTip(_turnRight, "Turn right 90°\nOr drag the round handle above it; Shift keeps to 15° steps");
         Tips.Shared.SetToolTip(_flipAcross, "Flip horizontally");
@@ -121,12 +134,12 @@ internal sealed class StyleBar : Surface
         Tips.Shared.SetToolTip(_middle, "Text in the middle of the box");
         Tips.Shared.SetToolTip(_bottom, "Text at the bottom of the box");
 
-        _row.Controls.AddRange([_kind, _hint, _font, _size, _bold, _italic, _split1, _left, _center, _right, _justify, _split5, _top, _middle, _bottom, _split2,
+        _row.Controls.AddRange([_kind, _eraserCaption, _eraserSize, _hint, _font, _size, _bold, _italic, _underline, _split1, _left, _center, _right, _justify, _split5, _top, _middle, _bottom, _split2,
             _crop, _tintCaption, _tint, _split4, _pens,
             _ink, _fillCaption, _fill, _widthCaption, _width, _endsCaption, _startEnd, _endEnd, _cornersCaption, _corners, _sweepCaption, _sweep,
             _opacityCaption, _opacity, _split3, .. _align.Select(entry => entry.Button), _distributeAcross, _distributeDown, _split6,
             _toFront, _forward, _backward, _toBack, _split7, _turnLeft, _turnRight, _flipAcross, _flipDown, _angleCaption, _angle, _split8,
-            _duplicate, _delete]);
+            _cut, _copy, _duplicate, _delete]);
         foreach (Control control in _row.Controls)
             if (control is AppButton) control.Margin = new Padding(0, 2, 4, 0);
         _fillCaption.Margin = _widthCaption.Margin = _opacityCaption.Margin = _cornersCaption.Margin = _endsCaption.Margin = _sweepCaption.Margin = _tintCaption.Margin = new Padding(8, 9, 6, 0);
@@ -167,15 +180,36 @@ internal sealed class StyleBar : Surface
         _angle.Changed += (_, _) => { if (!_syncing) _canvas.SetRotation(_angle.Value, _angle.Session); };
         _sweep.Changed += (_, _) => Apply(item => item.Sweep = _sweep.Value, StyleFamily.Shape, _sweep.Session);
         _size.Changed += (_, _) => Apply(item => item.FontSize = _size.Value, StyleFamily.Text, _size.Session);
-        _bold.Click += (_, _) => { _bold.Selected = !_bold.Selected; Apply(item => item.Bold = _bold.Selected, StyleFamily.Text); };
-        _italic.Click += (_, _) => { _italic.Selected = !_italic.Selected; Apply(item => item.Italic = _italic.Selected, StyleFamily.Text); };
+        // While text is being typed these style the words picked in it; otherwise the whole box.
+        Tips.Shared.SetToolTip(_bold, "Bold (Ctrl+B)\nWhile typing, makes the words you pick bold");
+        Tips.Shared.SetToolTip(_italic, "Italic (Ctrl+I)\nWhile typing, makes the words you pick italic");
+        Tips.Shared.SetToolTip(_underline, "Underline (Ctrl+U)\nWhile typing, underlines the words you pick");
+        _bold.Click += (_, _) =>
+        {
+            if (_canvas.IsEditingText) { _canvas.ToggleEditorStyle(FontStyle.Bold); return; }
+            _bold.Selected = !_bold.Selected;
+            Apply(item => { item.Bold = _bold.Selected; foreach (TextSpan span in item.Spans) span.Bold = _bold.Selected; }, StyleFamily.Text);
+        };
+        _italic.Click += (_, _) =>
+        {
+            if (_canvas.IsEditingText) { _canvas.ToggleEditorStyle(FontStyle.Italic); return; }
+            _italic.Selected = !_italic.Selected;
+            Apply(item => { item.Italic = _italic.Selected; foreach (TextSpan span in item.Spans) span.Italic = _italic.Selected; }, StyleFamily.Text);
+        };
+        _underline.Click += (_, _) =>
+        {
+            if (_canvas.IsEditingText) { _canvas.ToggleEditorStyle(FontStyle.Underline); return; }
+            _underline.Selected = !_underline.Selected;
+            Apply(item => SetUnderline(item, _underline.Selected), StyleFamily.Text);
+        };
         _left.Click += (_, _) => SetAlign(TextAlign.Left);
         _center.Click += (_, _) => SetAlign(TextAlign.Center);
         _right.Click += (_, _) => SetAlign(TextAlign.Right);
         _ink.Changed += (_, _) =>
         {
             _pens.InkColor = _ink.Color;
-            Apply(item => item.StrokeColor = _ink.Color.ToArgb());
+            if (_canvas.IsEditingText && !_syncing) { _canvas.ColorEditorSelection(_ink.Color); return; }
+            Apply(item => { item.StrokeColor = _ink.Color.ToArgb(); foreach (TextSpan span in item.Spans) span.Color = item.StrokeColor; });
         };
         _fill.Changed += (_, _) => Apply(item => item.FillColor = _fill.Color.ToArgb());
         _width.Changed += (_, _) => Apply(item => item.StrokeWidth = _width.Value, session: _width.Session);
@@ -207,6 +241,8 @@ internal sealed class StyleBar : Surface
         Tips.Shared.SetToolTip(_backward, "Send backward");
         Tips.Shared.SetToolTip(_toBack, "Send to back");
         _duplicate.Click += (_, _) => _canvas.DuplicateSelection();
+        _cut.Click += (_, _) => { _canvas.Cut(); _canvas.Focus(); };
+        _copy.Click += (_, _) => { _canvas.Copy(); _canvas.Focus(); };
         _delete.Click += (_, _) => _canvas.DeleteSelection();
     }
 
@@ -300,6 +336,32 @@ internal sealed class StyleBar : Surface
         _canvas.Focus();
     }
 
+    /// <summary>Underlines a whole text box (or takes it off): underlining lives in the box's stretches of style.</summary>
+    static void SetUnderline(PageObject item, bool underline)
+    {
+        if (item.Kind != MarkKind.Text) return;
+        if (item.Spans.Count == 0)
+        {
+            if (!underline) return;
+            item.Spans = [new TextSpan { Length = item.Text.Length, Bold = item.Bold, Italic = item.Italic, Color = item.StrokeColor }];
+        }
+        foreach (TextSpan span in item.Spans) span.Underline = underline;
+        // Back to one plain style, it needs no stretches.
+        if (!underline && item.Spans.Select(span => (span.Bold, span.Italic, span.Color)).Distinct().Count() == 1) item.Spans = [];
+    }
+
+    /// <summary>While text is typed: the toggles and colour show the style of the words picked in it.</summary>
+    public void SyncEditing()
+    {
+        if (_canvas.EditorStyle is not var (bold, italic, underline, color)) return;
+        _syncing = true;
+        _bold.Selected = bold;
+        _italic.Selected = italic;
+        _underline.Selected = underline;
+        _ink.Color = color;
+        _syncing = false;
+    }
+
     static (string, string)[] FontChoices()
     {
         var families = new List<(string, string)> { ("Geist", EmbeddedFonts.PdfFamily), ("Geist Mono", EmbeddedFonts.PdfMonoFamily) };
@@ -347,9 +409,20 @@ internal sealed class StyleBar : Surface
         if (session is null) _canvas.Focus();
     }
 
-    /// <summary>Crops the selected picture; what is kept stays where it was on the page, at the same size.</summary>
+    static bool Croppable(PageObject item) => item.Kind is not (MarkKind.Text or MarkKind.Note or MarkKind.Redaction or MarkKind.Highlight
+        or MarkKind.Underline or MarkKind.Strikeout);
+
+    /// <summary>
+    /// Crops the selected picture (what is kept stays where it was on the page, at the same size), or the selected
+    /// shape, line or drawing: what lies outside the part kept is hidden, and can be brought back by cropping again.
+    /// </summary>
     void CropImage()
     {
+        if (_canvas.Selection is [{ Kind: not MarkKind.Image } shape] && Croppable(shape))
+        {
+            CropShape(shape);
+            return;
+        }
         if (_canvas.Selection is not [{ Kind: MarkKind.Image, ImageData: { } data } image] || ImageCache.Get(image) is not { } picture) return;
         if (ImageCropDialog.Ask(FindForm(), picture) is not { } part) return;
         _canvas.ChangeSelection(item =>
@@ -361,40 +434,82 @@ internal sealed class StyleBar : Surface
         _canvas.Focus();
     }
 
+    void CropShape(PageObject shape)
+    {
+        // The object as it is before it turns, drawn on white for the crop box.
+        PageObject flat = shape.Clone();
+        flat.Rotation = 0;
+        flat.FlipX = flat.FlipY = false;
+        flat.CropLeft = flat.CropTop = flat.CropRight = flat.CropBottom = 0;
+        float scale = 560 / Math.Max(1, Math.Max(flat.Width, flat.Height));
+        using var picture = new Bitmap(Math.Max(1, (int)Math.Ceiling(flat.Width * scale)), Math.Max(1, (int)Math.Ceiling(flat.Height * scale)));
+        using (Graphics g = Graphics.FromImage(picture))
+        {
+            g.Clear(Color.White);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.ScaleTransform(scale, scale);
+            g.TranslateTransform(-flat.X, -flat.Y);
+            PagePainter.DrawObject(g, flat);
+        }
+        var kept = new RectangleF(shape.CropLeft, shape.CropTop, 1 - shape.CropLeft - shape.CropRight, 1 - shape.CropTop - shape.CropBottom);
+        if (ImageCropDialog.AskPart(FindForm(), picture, $"Crop {KindName(shape)}", kept) is not { } part) return;
+        bool whole = part.Width > 0.999f && part.Height > 0.999f;
+        _canvas.ChangeSelection(item =>
+        {
+            item.CropLeft = whole ? 0 : part.Left;
+            item.CropTop = whole ? 0 : part.Top;
+            item.CropRight = whole ? 0 : 1 - part.Right;
+            item.CropBottom = whole ? 0 : 1 - part.Bottom;
+        });
+        _canvas.Focus();
+    }
+
     /// <summary>Shows the controls for the selection, or for the current tool when nothing is selected.</summary>
     public void Sync()
     {
         IReadOnlyList<PageObject> selection = _canvas.Selection;
         bool hasSelection = selection.Count > 0;
-        StyleFamily family = hasSelection
+        PageObject? typing = _canvas.EditingObject;
+        StyleFamily family = typing is not null ? StyleFamily.Text
+            : hasSelection
             ? selection.Select(item => ToolStyles.FamilyOf(item.Kind)).Distinct().Count() == 1 ? ToolStyles.FamilyOf(selection[0].Kind) : StyleFamily.None
             : ToolStyles.FamilyOf(_canvas.Tool);
         _family = family;
-        PageObject? source = hasSelection && family != StyleFamily.None ? selection[0] : _styles.TemplateOf(family);
+        PageObject? source = typing ?? (hasSelection && family != StyleFamily.None ? selection[0] : _styles.TemplateOf(family));
 
         _syncing = true;
         _row.SuspendLayout();
-        bool grouped = hasSelection && selection.All(item => item.Group is not null) && selection.Select(item => item.Group).Distinct().Count() == 1;
-        _kind.Text = hasSelection
+        bool grouped = selection.Count > 1 && selection.All(item => item.Group is not null) && selection.Select(item => item.Group).Distinct().Count() == 1;
+        _kind.Text = typing is not null ? "Text box"
+            : hasSelection
             ? grouped ? $"Group of {selection.Count}" : selection.Count == 1 ? KindName(selection[0]) : $"{selection.Count} objects"
             : family == StyleFamily.None ? "" : ToolName(_canvas.Tool);
         _kind.Visible = _kind.Text.Length > 0;
-        _hint.Text = !hasSelection && family is StyleFamily.None or StyleFamily.Redaction
+        _hint.Text = !hasSelection && (family is StyleFamily.None or StyleFamily.Redaction || _canvas.Tool == EditTool.PenPath)
             ? family != StyleFamily.Redaction ? _canvas.Tool switch
             {
                 EditTool.SelectText => "Drag across the text to pick it, then press Ctrl+C to copy it.",
+                EditTool.PenPath => "Click for corners, drag for curves. Click the first point to close; Enter ends.",
+                EditTool.VertexSelect => "Click a shape, line or drawing, then drag its points. Alt-drag a point for curve handles; double-click the outline to add a point.",
                 EditTool.LiftRectangle or EditTool.LiftFreeform => "Drag around part of the page to cut it out and move it. White is left behind.",
+                EditTool.LiftPen => "Click round the part to lift, point by point (drag to curve). Click the first point (or press Enter) to lift it; Backspace takes a point back.",
+                EditTool.EraseArea => "Rubs out drawings, shapes, lines and pictures under it. Text stays.",
+                EditTool.EraseStroke => "Takes away each drawing, shape, line or picture it touches. Text stays.",
                 _ => IdleHint,
             }
             : _canvas.Tool == EditTool.RedactText ? "Drag across the words to hide." : "Drag over what to hide. Choose the cover in the panel on the right."
             : "";
         _hint.Visible = _hint.Text.Length > 0;
+        _eraserSize.Visible = _eraserCaption.Visible = !hasSelection && _canvas.Tool == EditTool.EraseArea;
+        if (_eraserSize.Visible) _kind.Text = "Eraser";
+        else if (!hasSelection && _canvas.Tool == EditTool.EraseStroke) _kind.Text = "Stroke Eraser";
+        _kind.Visible = _kind.Text.Length > 0;
 
         bool text = family == StyleFamily.Text, shape = family == StyleFamily.Shape, image = family == StyleFamily.Image;
         bool stroked = family is StyleFamily.Shape or StyleFamily.Line or StyleFamily.Ink or StyleFamily.Markup;
         bool coloured = family is StyleFamily.Text or StyleFamily.Shape or StyleFamily.Line or StyleFamily.Ink or StyleFamily.Highlight or StyleFamily.Markup or StyleFamily.Note;
         bool opacity = family is StyleFamily.Text or StyleFamily.Shape or StyleFamily.Line or StyleFamily.Ink or StyleFamily.Highlight or StyleFamily.Image;
-        _font.Visible = _size.Visible = _bold.Visible = _italic.Visible = _split1.Visible = text;
+        _font.Visible = _size.Visible = _bold.Visible = _italic.Visible = _underline.Visible = _split1.Visible = text;
         _left.Visible = _center.Visible = _right.Visible = _justify.Visible = _split2.Visible = text;
         _top.Visible = _middle.Visible = _bottom.Visible = _split5.Visible = text;
         // Ends belong to a drawn line; each line tool starts plain or with its arrow.
@@ -404,12 +519,12 @@ internal sealed class StyleBar : Surface
             && (hasSelection || _canvas.Tool is not (EditTool.Check or EditTool.Cross));
         _sweep.Visible = _sweepCaption.Visible = shape && (hasSelection ? selection.All(item => item.Kind == MarkKind.Pie) : _canvas.Tool == EditTool.Pie);
         bool pictures = image && hasSelection;
-        _crop.Visible = pictures && selection.Count == 1;
+        _crop.Visible = hasSelection && selection.Count == 1 && Croppable(selection[0]);
         _tint.Visible = _tintCaption.Visible = pictures;
         _split4.Visible = pictures;
         bool turnable = hasSelection && _canvas.CanTurn;
         _turnLeft.Visible = _turnRight.Visible = _flipAcross.Visible = _flipDown.Visible = _split8.Visible = turnable;
-        _angle.Visible = _angleCaption.Visible = turnable && selection.Any(item => ShapeGeometry.TurnsAsBox(item.Kind));
+        _angle.Visible = _angleCaption.Visible = turnable;
         _ink.Visible = coloured;
         _fill.Visible = _fillCaption.Visible = text || shape;
         _width.Visible = _widthCaption.Visible = stroked;
@@ -421,7 +536,7 @@ internal sealed class StyleBar : Surface
             : _canvas.Tool is EditTool.Rectangle or EditTool.Triangle or EditTool.Star or EditTool.Parallelogram));
         _corners.Visible = _cornersCaption.Visible = rounded;
         _split3.Visible = hasSelection && (coloured || opacity);
-        _duplicate.Visible = _delete.Visible = _split6.Visible = _split7.Visible = hasSelection;
+        _duplicate.Visible = _delete.Visible = _cut.Visible = _copy.Visible = _split6.Visible = _split7.Visible = hasSelection;
         foreach (var (button, _, name) in _align)
         {
             button.Visible = hasSelection;
@@ -442,12 +557,13 @@ internal sealed class StyleBar : Surface
             (_startEnd.Value, _endEnd.Value) = ShapeGeometry.IsLine(source.Kind) ? ShapeGeometry.Ends(source) : (LineEnd.None, LineEnd.None);
             _pens.Value = source.Pen;
             _pens.InkColor = Color.FromArgb(255, Color.FromArgb(source.StrokeColor));
-            _angle.Value = source.Rotation;
+            _angle.Value = _canvas.AngleShown(source);
             _tint.Color = source.Tint >> 24 == 0 ? Color.Transparent : Color.FromArgb(source.Tint);
             _sweep.Value = source.Sweep;
             _size.Value = source.FontSize;
             _bold.Selected = source.Bold;
             _italic.Selected = source.Italic;
+            _underline.Selected = source.Spans.Count > 0 && source.Spans.All(span => span.Underline);
             _left.Selected = source.Align == TextAlign.Left;
             _center.Selected = source.Align == TextAlign.Center;
             _right.Selected = source.Align == TextAlign.Right;
@@ -476,6 +592,7 @@ internal sealed class StyleBar : Surface
         EditTool.Text => "Text",
         EditTool.Date => "Date",
         EditTool.Draw => "Pen",
+        EditTool.PenPath => "Path Pen",
         EditTool.SemiCircle => "Semicircle",
         EditTool.Strikeout => "Strike-through",
         EditTool.Check => "Tick",

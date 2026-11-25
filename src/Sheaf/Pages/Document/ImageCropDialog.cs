@@ -10,9 +10,10 @@ internal sealed class ImageCropDialog : DialogForm
     readonly CropBox _box;
     readonly ChoiceGroup<float> _shape = new("Shape", horizontal: true, ("Free", 0f), ("Square", 1f), ("4:3", 4 / 3f), ("16:9", 16 / 9f));
 
-    ImageCropDialog(Image image) : base("Crop Image", "Drag the edges or corners of the box, or drag inside it to move it. Arrow keys move it; with Shift they resize it.", 480)
+    ImageCropDialog(Image image, string title = "Crop Image", RectangleF? start = null) : base(title, "Drag the edges or corners of the box, or drag inside it to move it. Arrow keys move it; with Shift they resize it.", 480)
     {
         _box = new CropBox(image) { Height = 320 };
+        if (start is { } part) _box.Start(part);
         AddContent(_box);
         AddContent(new FormField("Shape", _shape), 14);
         AddButtons("Crop");
@@ -27,6 +28,16 @@ internal sealed class ImageCropDialog : DialogForm
         if (dialog.ShowDialog(owner) != DialogResult.OK) return null;
         RectangleF part = dialog._box.Part;
         return part.Width > 0.999f && part.Height > 0.999f ? null : part;
+    }
+
+    /// <summary>
+    /// The part of something to keep, starting from the part kept now, as fractions of its width and height; null
+    /// only when cancelled (the whole of it is a choice too: it takes a crop off).
+    /// </summary>
+    public static RectangleF? AskPart(IWin32Window? owner, Image picture, string title, RectangleF start)
+    {
+        using var dialog = new ImageCropDialog(picture, title, start);
+        return dialog.ShowDialog(owner) == DialogResult.OK ? dialog._box.Part : null;
     }
 
     /// <summary>The picture with the crop box over it; outside the box is dimmed.</summary>
@@ -50,6 +61,8 @@ internal sealed class ImageCropDialog : DialogForm
         }
 
         public RectangleF Part => _part;
+
+        public void Start(RectangleF part) => _part = RectangleF.Intersect(part, new RectangleF(0, 0, 1, 1));
 
         /// <summary>Width over height the box keeps, in the picture's pixels; 0 for any shape.</summary>
         public float Aspect

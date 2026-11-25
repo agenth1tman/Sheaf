@@ -16,7 +16,8 @@ internal interface IShell
     /// <summary>Opens a PDF in its own tab, or switches to the tab that already has it.</summary>
     void OpenDocument(string path, string? mode = null);
 
-    void OpenBlankDocument();
+    /// <summary>Opens a new blank PDF (A4 and white unless a size and paper are given) or a new blank image.</summary>
+    void OpenBlankDocument(Pages.BlankChoice? choice = null);
 
     /// <summary>Opens a picture to edit (or a blank one of a size, when <paramref name="path"/> is null), to export as an image or a PDF.</summary>
     void OpenImageDocument(string? path, Size pixels);
@@ -86,6 +87,11 @@ internal abstract class TabContent : UserControl
 
     /// <summary>Called each time the tab comes to the front.</summary>
     public virtual void Activated() { }
+
+    /// <summary>Whether the tab can be renamed (by double-clicking it).</summary>
+    public virtual bool CanRename => false;
+
+    public virtual void Rename() { }
 
     /// <summary>Files dropped on the window while this tab is in front. Returns false to let the window handle them.</summary>
     public virtual bool AcceptDrop(string[] paths) => false;

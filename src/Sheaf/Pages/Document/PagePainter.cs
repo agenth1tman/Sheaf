@@ -36,7 +36,7 @@ internal static class PagePainter
     public static SizeF DisplaySize(PageEntry entry) =>
         entry.Rotation is 90 or 270 ? new SizeF(entry.Height, entry.Width) : new SizeF(entry.Width, entry.Height);
 
-    public static void DrawPage(Graphics g, PageEntry entry, Bitmap? page, RectangleF target, Func<PageObject, bool>? include = null, bool previewRedactions = false)
+    public static void DrawPage(Graphics g, PageEntry entry, Bitmap? page, RectangleF target, Func<PageObject, bool>? include = null, bool previewRedactions = false, bool export = false)
     {
         // A page rendered at exactly the size it shows is copied pixel for pixel: as sharp as the PDF engine drew it.
         bool exact = page is not null && entry.Rotation == 0 && !entry.IsMirrored && g.Transform.IsIdentity
@@ -51,8 +51,7 @@ internal static class PagePainter
         using Matrix matrix = Transform(entry, target);
         g.MultiplyTransform(matrix);
         var bounds = new RectangleF(0, 0, entry.Width, entry.Height);
-        if (!exact)
-            using (var paper = new SolidBrush(entry.IsBlank ? Color.FromArgb(255, Color.FromArgb(entry.Background)) : Color.White)) g.FillRectangle(paper, bounds);
+        if (!exact) FillPaper(g, entry, bounds, checkered: !export);
         if (page is not null && !exact)
         {
             g.InterpolationMode = InterpolationMode.HighQualityBilinear;
@@ -78,7 +77,7 @@ internal static class PagePainter
     public static void DrawPaper(Graphics g, PageEntry entry, Bitmap? page)
     {
         var bounds = new RectangleF(0, 0, entry.Width, entry.Height);
-        using (var paper = new SolidBrush(entry.IsBlank ? Color.FromArgb(255, Color.FromArgb(entry.Background)) : Color.White)) g.FillRectangle(paper, bounds);
+        FillPaper(g, entry, bounds, checkered: false);
         if (page is null) return;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.PixelOffsetMode = PixelOffsetMode.Half;
@@ -86,6 +85,31 @@ internal static class PagePainter
         Mirror(g, entry);
         g.DrawImage(page, bounds);
         g.Restore(flat);
+    }
+
+    /// <summary>Whether a page has no paper: a see-through blank page, which exports to PNG with nothing behind.</summary>
+    public static bool IsSeeThrough(PageEntry entry) => entry.IsBlank && entry.Background >> 24 == 0;
+
+    /// <summary>
+    /// The paper of a page: white, the colour chosen for a blank page, or, for a see-through one, nothing (or the
+    /// grey checks editors show for "nothing here" when <paramref name="checkered"/>).
+    /// </summary>
+    static void FillPaper(Graphics g, PageEntry entry, RectangleF bounds, bool checkered)
+    {
+        if (IsSeeThrough(entry))
+        {
+            if (!checkered) return;
+            g.FillRectangle(Brushes.White, bounds);
+            using var checks = new System.Drawing.Drawing2D.HatchBrush(HatchStyle.LargeCheckerBoard, Color.FromArgb(225, 225, 228), Color.White);
+            GraphicsState state = g.Save();
+            // Checks a fixed size on screen, whatever the zoom.
+            g.RenderingOrigin = Point.Empty;
+            g.FillRectangle(checks, bounds);
+            g.Restore(state);
+            return;
+        }
+        using var paper = new SolidBrush(entry.IsBlank ? Color.FromArgb(255, Color.FromArgb(entry.Background)) : Color.White);
+        g.FillRectangle(paper, bounds);
     }
 
     static void Mirror(Graphics g, PageEntry entry)
@@ -119,6 +143,10 @@ internal static class PagePainter
         try
         {
             using (Matrix? turn = ShapeGeometry.Transform(item)) if (turn is not null) g.MultiplyTransform(turn);
+            if (item.IsCropped) g.IntersectClip(ShapeGeometry.CropClip(item));
+            using (GraphicsPath? erased = ShapeGeometry.ErasedPath(item))
+                if (erased is not null)
+                    using (var rubbed = new Region(erased)) g.ExcludeClip(rubbed);
             DrawObjectUnguarded(g, item);
         }
         catch (Exception ex) when (ex is ArgumentException or ExternalException or OverflowException or InvalidOperationException)
@@ -179,9 +207,11 @@ internal static class PagePainter
         }
     }
 
-    public static Font FontFor(PageObject item)
+    public static Font FontFor(PageObject item) => FontFor(item, item.Bold, item.Italic);
+
+    public static Font FontFor(PageObject item, bool bold, bool italic)
     {
-        FontStyle style = (item.Bold ? FontStyle.Bold : 0) | (item.Italic ? FontStyle.Italic : 0);
+        FontStyle style = (bold ? FontStyle.Bold : 0) | (italic ? FontStyle.Italic : 0);
         var key = (item.FontFamily, Math.Max(1, item.FontSize), style);
         if (Fonts.TryGetValue(key, out Font? font)) return font;
         FontFamily family = item.FontFamily switch
@@ -213,6 +243,11 @@ internal static class PagePainter
                 else g.FillRectangle(fill, rect);
             }
         if (string.IsNullOrEmpty(item.Text)) return;
+        if (item.Spans.Count > 0)
+        {
+            DrawStyledText(g, item, rect);
+            return;
+        }
         using var format = new StringFormat(StringFormat.GenericTypographic)
         {
             Alignment = item.Align switch { TextAlign.Center => StringAlignment.Center, TextAlign.Right => StringAlignment.Far, _ => StringAlignment.Near },
@@ -250,6 +285,53 @@ internal static class PagePainter
         }
         if (item.Align == TextAlign.Justify) DrawJustified(g, item.Text, font, brush, area);
         else g.DrawString(item.Text, font, brush, area, format);
+        g.Restore(state);
+    }
+
+    static readonly StringFormat Measuring = new(StringFormat.GenericTypographic) { FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces };
+
+    /// <summary>A text box whose words have styles of their own, laid out as the saved PDF lays it out.</summary>
+    static List<TextLine> StyledLines(Graphics g, PageObject item, float width) =>
+        TextLayout.Lay(item, width, (text, style) => g.MeasureString(text, FontFor(item, style.Bold, style.Italic), PointF.Empty, Measuring).Width,
+            style => FontFor(item, style.Bold, style.Italic).GetHeight(g));
+
+    static void DrawStyledText(Graphics g, PageObject item, RectangleF rect)
+    {
+        const float Inset = 2;
+        List<TextLine> lines;
+        using (var bitmap = new Bitmap(1, 1))
+        using (Graphics measure = Graphics.FromImage(bitmap)) lines = StyledLines(measure, item, Math.Max(1, rect.Width - 2 * Inset));
+        float spare = Math.Max(0, rect.Height - lines.Sum(line => line.Height) - 2 * Inset);
+        float shift = item.Anchor switch { TextAnchor.Middle => spare / 2, TextAnchor.Bottom => spare, _ => 0 };
+        GraphicsState state = g.Save();
+        float[] m;
+        using (Matrix current = g.Transform) m = current.Elements;
+        // On an upright page each piece is drawn at its size on screen, as plain text is, so small text stays crisp.
+        bool upright = Math.Abs(m[1]) < 0.0001f && Math.Abs(m[2]) < 0.0001f && m[0] > 0 && Math.Abs(m[0] - m[3]) < 0.0001f;
+        float scale = upright ? m[0] : 1, dx = upright ? m[4] : 0, dy = upright ? m[5] : 0;
+        if (upright) g.ResetTransform();
+        foreach (TextLine line in lines)
+            foreach (TextPiece piece in line.Pieces)
+            {
+                Font font = FontFor(item, piece.Style.Bold, piece.Style.Italic);
+                if (upright) font = ScreenFont(font, scale);
+                float x = (rect.X + Inset + piece.X) * scale + dx, y = (rect.Y + Inset + shift + line.Top) * scale + dy;
+                using var brush = new SolidBrush(WithAlpha(piece.Style.Color, item.Opacity));
+                GraphicsState slanted = g.Save();
+                if (piece.Style.Italic && !font.Italic)
+                {
+                    float baseline = y + item.FontSize * scale;
+                    g.TranslateTransform(x, baseline);
+                    g.MultiplyTransform(new Matrix(1, 0, -0.2f, 1, 0, 0));
+                    g.TranslateTransform(-x, -baseline);
+                }
+                if (piece.Text.Trim().Length > 0) g.DrawString(piece.Text, font, brush, x, y, Measuring);
+                g.Restore(slanted);
+                if (!piece.Style.Underline) continue;
+                float thickness = Math.Max(0.5f, item.FontSize * 0.06f) * scale, under = y + line.Height * 0.8f * scale + thickness * 1.5f;
+                using var pen = new Pen(WithAlpha(piece.Style.Color, item.Opacity), thickness);
+                g.DrawLine(pen, x, under, x + piece.Width * scale, under);
+            }
         g.Restore(state);
     }
 
@@ -314,6 +396,13 @@ internal static class PagePainter
     /// <summary>Height a text box needs for its text at its width, in points.</summary>
     public static float TextHeight(Graphics g, PageObject item)
     {
+        if (item.Spans.Count > 0 && item.Text.Length > 0)
+        {
+            string own = item.Text;
+            if (own.EndsWith('\n')) item.Text += "Ag";
+            try { return StyledLines(g, item, Math.Max(1, item.Width - 4)).Sum(line => line.Height) + 6; }
+            finally { item.Text = own; }
+        }
         using var format = new StringFormat(StringFormat.GenericTypographic);
         string text = string.IsNullOrEmpty(item.Text) ? "Ag" : item.Text.EndsWith('\n') ? item.Text + "Ag" : item.Text;
         SizeF size = g.MeasureString(text, FontFor(item), new SizeF(Math.Max(1, item.Width - 4), 100000), format);

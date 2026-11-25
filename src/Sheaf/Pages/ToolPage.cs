@@ -25,6 +25,20 @@ internal sealed class ToolPage : TabContent
     readonly ActionPanel _action;
     CancellationTokenSource? _run;
 
+    readonly Control _summary, _content, _header;
+
+    /// <summary>On a short window the line under the title goes and the margins tighten, leaving the options room.</summary>
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        if (_content is null) return;
+        int height = (int)Math.Round(Height * 96f / Math.Max(96, DeviceDpi)), width = (int)Math.Round(Width * 96f / Math.Max(96, DeviceDpi));
+        bool tight = height > 0 && height < 600;
+        _summary.Visible = !tight;
+        _content.Padding = new Padding(LogicalToDeviceUnits(width < 900 ? 20 : 32), LogicalToDeviceUnits(tight ? 14 : 24), 0, 0);
+        _header.Padding = new Padding(0, 0, LogicalToDeviceUnits(32), LogicalToDeviceUnits(tight ? 8 : 18));
+    }
+
     public ToolPage(IShell shell, Tool tool) : base(shell)
     {
         Tool = tool;
@@ -33,11 +47,14 @@ internal sealed class ToolPage : TabContent
 
         var content = new Surface { Dock = DockStyle.Fill, Padding = new Padding(32, 24, 0, 0) };
         content.Controls.Add(BuildBody());
-        var header = Make.Stack(Make.Title(tool.Info.Title), Make.Paragraph(tool.Info.Summary));
+        _summary = Make.Paragraph(tool.Info.Summary);
+        var header = Make.Stack(Make.Title(tool.Info.Title), _summary);
         header.Dock = DockStyle.Top;
         header.Padding = new Padding(0, 0, 32, 18);
         content.Controls.Add(header);
         Controls.Add(content);
+        _content = content;
+        _header = header;
 
         _list.EmptyText = $"Drop {KindNoun(tool.Info.Accepts)} here, or choose Add Files…";
         _action.RunButton.Text = tool.Info.ActionText;
@@ -259,17 +276,8 @@ internal sealed class ToolPage : TabContent
     public override bool ConfirmClose()
     {
         if (_run is null) return true;
-        var stop = new TaskDialogButton("Stop and Close");
-        var page = new TaskDialogPage
-        {
-            Caption = "Sheaf",
-            Heading = $"{Tool.Info.Title} is still running",
-            Text = "Closing stops it. Files it already finished are kept.",
-            Buttons = { new TaskDialogButton("Keep Running"), stop },
-            Icon = TaskDialogIcon.Warning,
-        };
-        page.DefaultButton = page.Buttons[0];
-        if (TaskDialog.ShowDialog(this, page) != stop) return false;
+        if (AskDialog.Ask(FindForm(), $"{Tool.Info.Title} Is Still Running", "Closing stops it. Files it already finished are kept.", "Stop and Close",
+            cancel: "Keep Running", safeDefault: true) != DialogResult.OK) return false;
         _run.Cancel();
         return true;
     }

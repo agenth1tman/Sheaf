@@ -16,6 +16,10 @@ internal sealed class ToolRail : Surface
     readonly List<(RailTool[] Family, AppButton Button)> _buttons = [];
     // The tool each shared button shows, kept across modes and documents' visits to them.
     readonly Dictionary<EditTool, RailTool> _shown = [];
+    Divider? _divider;
+    // On a short window: the tools that don't fit, offered by a button at the foot of the rail.
+    readonly AppButton _overflow = new("", ButtonKind.Quiet, "more") { LogicalHeight = ButtonSize, Margin = Padding.Empty, AccessibleName = "More Tools", Visible = false };
+    readonly List<RailTool[]> _hiddenFamilies = [];
 
     public ToolRail() : base(SurfaceRole.Panel)
     {
@@ -23,6 +27,68 @@ internal sealed class ToolRail : Surface
         Padding = new Padding(6, 8, 6, 8);
         AccessibleRole = AccessibleRole.ToolBar;
         AccessibleName = "Tools";
+        Tips.Shared.SetToolTip(_overflow, "More tools");
+        _overflow.Click += (_, _) => ShowOverflow();
+    }
+
+    /// <summary>
+    /// Places the buttons top to bottom: closer together when the rail is short, and when even that is too tall,
+    /// the last ones go into a "more" button at the foot.
+    /// </summary>
+    void LayOut()
+    {
+        if (_buttons.Count == 0) return;
+        int top = Padding.Top, available = ClientSize.Height - Padding.Bottom;
+        int gap = LogicalToDeviceUnits(4), dividerSpace = _divider is null ? 0 : LogicalToDeviceUnits(9);
+        int size = LogicalToDeviceUnits(ButtonSize);
+        if (top + dividerSpace + _buttons.Count * (size + gap) > available)
+        {
+            size = LogicalToDeviceUnits(30);
+            gap = LogicalToDeviceUnits(2);
+        }
+        int fits = Math.Max(1, (available - top - dividerSpace + gap) / (size + gap));
+        bool overflow = fits < _buttons.Count;
+        int shown = overflow ? Math.Max(1, fits - 1) : _buttons.Count;
+        _hiddenFamilies.Clear();
+        int y = top;
+        for (int i = 0; i < _buttons.Count; i++)
+        {
+            var (family, button) = _buttons[i];
+            if (i == 2 && _divider is not null)
+            {
+                _divider.SetBounds(LogicalToDeviceUnits(10), y + LogicalToDeviceUnits(4) - (gap == LogicalToDeviceUnits(2) ? LogicalToDeviceUnits(2) : 0), Width - 2 * LogicalToDeviceUnits(10), 1);
+                y += dividerSpace;
+            }
+            button.Visible = i < shown;
+            if (i >= shown)
+            {
+                _hiddenFamilies.Add(family);
+                continue;
+            }
+            button.SetBounds((Width - size) / 2, y, size, size);
+            y += size + gap;
+        }
+        _overflow.Visible = overflow;
+        if (overflow)
+        {
+            _overflow.SetBounds((Width - size) / 2, y, size, size);
+            _overflow.Selected = _hiddenFamilies.Any(family => _buttons.Any(pair => pair.Family == family && pair.Button.Selected));
+        }
+    }
+
+    /// <summary>The tools that didn't fit on the rail, in a menu beside it.</summary>
+    void ShowOverflow()
+    {
+        var menu = Menus.Create();
+        foreach (RailTool[] family in _hiddenFamilies)
+        {
+            if (menu.Items.Count > 0) menu.Items.Add(new ToolStripSeparator());
+            foreach (RailTool tool in family)
+                menu.Items.Add(Menus.Item(tool.Name, () => ToolChosen?.Invoke(this, tool.Tool), KeyName(tool.Key),
+                    isChecked: _buttons.Any(pair => pair.Family == family && pair.Button.Selected) && ShownOf(family) == tool));
+        }
+        menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
+        Menus.Show(menu, _overflow, new Point(_overflow.Width + LogicalToDeviceUnits(6), 0));
     }
 
     public event EventHandler<EditTool>? ToolChosen;
@@ -33,17 +99,16 @@ internal sealed class ToolRail : Surface
         foreach (var (_, button) in _buttons) button.Dispose();
         _buttons.Clear();
         Controls.Clear();
-        int y = Padding.Top;
+        _divider?.Dispose();
+        _divider = null;
         for (int i = 0; i < families.Count; i++)
         {
             RailTool[] family = families[i];
             if (i == 2)
             {
-                var divider = new Divider { Margin = Padding.Empty };
-                divider.SetBounds(LogicalToDeviceUnits(10), y + LogicalToDeviceUnits(4), Width - 2 * LogicalToDeviceUnits(10), 1);
-                divider.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-                Controls.Add(divider);
-                y += LogicalToDeviceUnits(9);
+                _divider = new Divider { Margin = Padding.Empty };
+                _divider.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
+                Controls.Add(_divider);
             }
             RailTool tool = ShownOf(family);
             var button = new AppButton("", ButtonKind.Quiet, tool.Icon)
@@ -53,7 +118,6 @@ internal sealed class ToolRail : Surface
                 TabStop = i == 0,
                 HasMore = family.Length > 1,
             };
-            button.Location = new Point((Width - LogicalToDeviceUnits(ButtonSize)) / 2, y);
             // Holding the button down opens the others, as in Photoshop; the click that ends the hold does nothing more.
             bool held = false;
             var hold = new System.Windows.Forms.Timer { Interval = HoldMs };
@@ -93,8 +157,9 @@ internal sealed class ToolRail : Surface
             Describe(button, family, tool);
             Controls.Add(button);
             _buttons.Add((family, button));
-            y += LogicalToDeviceUnits(ButtonSize + 4);
         }
+        Controls.Add(_overflow);
+        LayOut();
         ResumeLayout(true);
     }
 
@@ -128,7 +193,9 @@ internal sealed class ToolRail : Surface
         {
             // Opened by holding: say that letting go over a tool picks it.
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripLabel("Slide to one and let go") { Font = AppFonts.Small, Padding = new Padding(4, 4, 4, 6), Enabled = true });
+            var hint = new Menus.SlideHint("Slide to one and let go");
+            menu.Items.Add(hint);
+            menu.Opened += (_, _) => hint.Start();
         }
         menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
         Menus.Show(menu, button, new Point(button.Width + LogicalToDeviceUnits(6), 0));
@@ -146,6 +213,7 @@ internal sealed class ToolRail : Surface
             }
             button.Selected = match is not null;
         }
+        if (_overflow.Visible) _overflow.Selected = _hiddenFamilies.Any(family => family.Any(railTool => railTool.Tool == tool));
     }
 
     public IEnumerable<RailTool> Tools => _buttons.SelectMany(pair => pair.Family);
@@ -155,6 +223,6 @@ internal sealed class ToolRail : Surface
     protected override void OnResize(EventArgs eventargs)
     {
         base.OnResize(eventargs);
-        foreach (var (_, button) in _buttons) button.Left = (Width - button.Width) / 2;
+        LayOut();
     }
 }

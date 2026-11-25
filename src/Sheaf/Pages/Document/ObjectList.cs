@@ -27,7 +27,7 @@ internal sealed class ObjectList : Panel, IItemHost
     List<ObjectRow> _rows = [];
     HashSet<Guid> _selected = [];
     int _hover = -1, _anchor = -1, _focus = -1;
-    bool _hoverAction;
+    bool _hoverAction, _hoverLock;
 
     // A press on a row may become a drag; one on the empty space may become a selection box.
     int _pressIndex = -1;
@@ -50,6 +50,9 @@ internal sealed class ObjectList : Panel, IItemHost
 
     public event EventHandler<ObjectRow>? Picked;
     public event EventHandler<ObjectRow>? ActionClicked;
+
+    /// <summary>The lock beside the eye was clicked (layer lists only).</summary>
+    public event EventHandler<ObjectRow>? LockClicked;
 
     /// <summary>With <see cref="MultiSelect"/>: the objects now chosen, after a Ctrl or Shift click.</summary>
     public event EventHandler<IReadOnlyList<PageObject>>? PickedMany;
@@ -119,6 +122,16 @@ internal sealed class ObjectList : Panel, IItemHost
         return new Rectangle(row.Right - size - LogicalToDeviceUnits(8), row.Y + (row.Height - size) / 2, size, size);
     }
 
+    /// <summary>A layer list has a lock beside each eye.</summary>
+    bool HasLock => Action == "eye" && LockClicked is not null;
+
+    Rectangle LockBounds(Rectangle row)
+    {
+        Rectangle eye = ActionBounds(row);
+        eye.Offset(-eye.Width - LogicalToDeviceUnits(2), 0);
+        return eye;
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         Palette p = Theme.Current;
@@ -154,7 +167,7 @@ internal sealed class ObjectList : Panel, IItemHost
             Icons.Draw(g, item.Members is null ? ToolStyles.IconOf(item.Item) : "group", new Rectangle(x, row.Y + (TwoLines ? LogicalToDeviceUnits(8) : (row.Height - icon) / 2), icon, icon),
                 hidden ? p.Text3 : item.Members is null ? ToolStyles.SwatchOf(item.Item) : p.Text2);
             x += icon + LogicalToDeviceUnits(10);
-            int right = Action is null ? box.Right - inset : ActionBounds(row).Left - LogicalToDeviceUnits(4);
+            int right = Action is null ? box.Right - inset : (HasLock ? LockBounds(row) : ActionBounds(row)).Left - LogicalToDeviceUnits(4);
             if (TwoLines)
             {
                 int line = AppFonts.Body.Height;
@@ -171,6 +184,14 @@ internal sealed class ObjectList : Panel, IItemHost
                 if (i == _hover && _hoverAction) Draw.Box(g, action, LogicalToDeviceUnits(Theme.RadiusSmall), p.Active);
                 string name = Action == "eye" ? hidden ? "eye-off" : "eye" : Action;
                 Icons.Draw(g, name, Rectangle.Inflate(action, -LogicalToDeviceUnits(6), -LogicalToDeviceUnits(6)), p.Text2);
+            }
+            // The lock shows on hover and stays in sight while the layer is locked.
+            bool locked = item.Objects.All(member => member.Locked);
+            if (HasLock && (i == _hover || selected || locked))
+            {
+                Rectangle padlock = LockBounds(row);
+                if (i == _hover && _hoverLock) Draw.Box(g, padlock, LogicalToDeviceUnits(Theme.RadiusSmall), p.Active);
+                Icons.Draw(g, locked ? "lock" : "unlock", Rectangle.Inflate(padlock, -LogicalToDeviceUnits(6), -LogicalToDeviceUnits(6)), locked ? p.Text : p.Text3);
             }
         }
         if (Focused && ShowFocusCues && (_focus >= 0 && _focus < _rows.Count ? _focus : Current) is int focus and >= 0)
@@ -245,9 +266,12 @@ internal sealed class ObjectList : Panel, IItemHost
         }
         int index = IndexAt(e.Location);
         bool onAction = index >= 0 && Action is not null && ActionBounds(RowBounds(index)).Contains(e.Location);
-        if (index == _hover && onAction == _hoverAction) return;
+        bool onLock = index >= 0 && HasLock && LockBounds(RowBounds(index)).Contains(e.Location);
+        if (index == _hover && onAction == _hoverAction && onLock == _hoverLock) return;
         _hover = index;
         _hoverAction = onAction;
+        _hoverLock = onLock;
+        Tips.Shared.SetToolTip(this, onLock ? (_rows[index].Objects.All(item => item.Locked) ? "Unlock" : "Lock\nA locked layer can't be chosen on the page, moved or erased") : onAction && Action == "eye" ? "Hide or show" : null);
         Invalidate();
     }
 
@@ -292,6 +316,11 @@ internal sealed class ObjectList : Panel, IItemHost
         if (row.Members is not null && IsOpen is not null && FoldBounds(RowBounds(index)).Contains(e.Location))
         {
             FoldToggled?.Invoke(this, row);
+            return;
+        }
+        if (HasLock && LockBounds(RowBounds(index)).Contains(e.Location))
+        {
+            LockClicked?.Invoke(this, row);
             return;
         }
         if (Action is not null && ActionBounds(RowBounds(index)).Contains(e.Location))
@@ -465,6 +494,7 @@ internal sealed class ObjectList : Panel, IItemHost
         ObjectRow row = _rows[index];
         string name = row.Detail.Length > 0 ? $"{row.Title}, {row.Detail}" : row.Title;
         if (row.Indented) name += ", in a group";
+        if (row.Objects.All(item => item.Locked)) name += ", locked";
         return row.Objects.All(item => item.Hidden) ? $"{name}, hidden" : name;
     }
 

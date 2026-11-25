@@ -22,6 +22,56 @@ internal sealed class ThemedTip : ToolTip
         UseAnimation = true;
         Popup += (_, e) => e.ToolTipSize = Measure(TextFor(e.AssociatedControl));
         Draw += (_, e) => Paint(e);
+        _disabledDelay.Tick += (_, _) => ShowDisabledTip();
+    }
+
+    // A disabled control gets no mouse messages, so Windows never shows its tip; its parent does get them, and
+    // shows the tip for it, so a greyed-out button still says what it does and why it is off.
+    readonly HashSet<Control> _watched = [];
+    readonly HashSet<Control> _tipped = [];
+    readonly System.Windows.Forms.Timer _disabledDelay = new() { Interval = 500 };
+    Control? _disabledShown, _disabledPending;
+
+    public new void SetToolTip(Control control, string? caption)
+    {
+        base.SetToolTip(control, caption);
+        if (string.IsNullOrEmpty(caption) || !_tipped.Add(control)) return;
+        WatchParentOf(control);
+        control.ParentChanged += (_, _) => WatchParentOf(control);
+        control.Disposed += (_, _) => _tipped.Remove(control);
+    }
+
+    void WatchParentOf(Control control)
+    {
+        if (control.Parent is not { } parent || !_watched.Add(parent)) return;
+        parent.MouseMove += (_, e) => OverDisabled(parent, e.Location);
+        parent.MouseLeave += (_, _) => OverDisabled(parent, null);
+        parent.Disposed += (_, _) => _watched.Remove(parent);
+    }
+
+    void OverDisabled(Control parent, Point? at)
+    {
+        Control? child = at is { } point
+            ? parent.Controls.Cast<Control>().FirstOrDefault(c => c.Visible && !c.Enabled && c.Bounds.Contains(point) && GetToolTip(c) is { Length: > 0 })
+            : null;
+        if (child is not null && (child == _disabledShown || child == _disabledPending)) return;
+        if (_disabledShown is { } shown)
+        {
+            if (!shown.IsDisposed) Hide(shown);
+            _disabledShown = null;
+        }
+        _disabledPending = child;
+        _disabledDelay.Stop();
+        if (child is not null) _disabledDelay.Start();
+    }
+
+    void ShowDisabledTip()
+    {
+        _disabledDelay.Stop();
+        if (_disabledPending is not { IsDisposed: false, Enabled: false } control) return;
+        _disabledPending = null;
+        _disabledShown = control;
+        ShowAt(GetToolTip(control) ?? "", control, new Point(0, control.Height + control.LogicalToDeviceUnits(4)));
     }
 
     /// <summary>Shows a tip at a point of a control (rather than at the pointer), until <see cref="Hide"/>.</summary>

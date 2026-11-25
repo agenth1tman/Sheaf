@@ -16,9 +16,9 @@ public sealed record InkPiece(PointF[] Points, float Width, float Alpha, bool Sq
 /// </summary>
 public static class ShapeGeometry
 {
-    /// <summary>Closed shapes this class draws: the ones with a fill and corners.</summary>
+    /// <summary>Shapes drawn from an outline that takes a fill: the closed shapes, and paths (open ones too).</summary>
     public static bool IsClosedShape(MarkKind kind) => kind is MarkKind.Rectangle or MarkKind.Ellipse or MarkKind.SemiCircle or MarkKind.Pie
-        or MarkKind.Polygon or MarkKind.Heart or MarkKind.Star or MarkKind.Parallelogram;
+        or MarkKind.Polygon or MarkKind.Heart or MarkKind.Star or MarkKind.Parallelogram or MarkKind.Path;
 
     /// <summary>Lines this class draws: straight or bent, with ends.</summary>
     public static bool IsLine(MarkKind kind) => kind is MarkKind.Line or MarkKind.Arrow or MarkKind.Curve or MarkKind.Spline;
@@ -74,6 +74,69 @@ public static class ShapeGeometry
         return RectangleF.FromLTRB(left, top, corners.Max(p => p.X), corners.Max(p => p.Y));
     }
 
+    /// <summary>
+    /// The clip a crop draws an object through, in its own frame: the part kept on each side that was cropped, and
+    /// room to spare on a side that wasn't, so an outline, a line end or a thick pen there isn't cut off with it.
+    /// </summary>
+    public static RectangleF CropClip(PageObject item)
+    {
+        float room = Math.Max(10, PenWidth(item) * 4 + 12);
+        RectangleF kept = item.CropBounds;
+        return RectangleF.FromLTRB(item.CropLeft > 0 ? kept.Left : kept.Left - room, item.CropTop > 0 ? kept.Top : kept.Top - room,
+            item.CropRight > 0 ? kept.Right : kept.Right + room, item.CropBottom > 0 ? kept.Bottom : kept.Bottom + room);
+    }
+
+    // Erasing ---------------------------------------------------------------------------------------------
+
+    /// <summary>The area the eraser rubbed out of an object, in its own frame; null when it was never erased.</summary>
+    public static GraphicsPath? ErasedPath(PageObject item)
+    {
+        if (item.Erased.Count == 0) return null;
+        var area = new GraphicsPath(FillMode.Winding);
+        for (int i = 0; i < item.Erased.Count; i++)
+        {
+            List<PointF> path = item.Erased[i];
+            float width = i < item.ErasedWidths.Count ? item.ErasedWidths[i] : 8;
+            if (path.Count == 0) continue;
+            // An area taken whole: its outline, filled.
+            if (width < 0 && path.Count >= 3)
+            {
+                area.AddPolygon([.. path]);
+                continue;
+            }
+            width = Math.Max(0.5f, width);
+            if (path.Count == 1 || path.All(p => Distance(p, path[0]) < 0.01f))
+            {
+                area.AddEllipse(path[0].X - width / 2, path[0].Y - width / 2, width, width);
+                continue;
+            }
+            using var stroke = new GraphicsPath();
+            stroke.AddLines([.. path]);
+            using var pen = new Pen(Color.Black, width) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            stroke.Widen(pen, null, 0.1f);
+            area.AddPath(stroke, false);
+        }
+        area.FillMode = FillMode.Winding;
+        return area;
+    }
+
+    /// <summary>
+    /// What is left of an object's area once its erased parts are taken out, as rectangles in its own frame: the
+    /// clip a PDF draws it through (PDF clips can't take an area away, only keep one).
+    /// </summary>
+    public static List<RectangleF> KeptAfterErasing(PageObject item)
+    {
+        using GraphicsPath? erased = ErasedPath(item);
+        if (erased is null) return [];
+        // Generous room round the box: line ends, arrow heads and thick pens reach past it.
+        float room = Math.Max(10, PenWidth(item) * 4 + 12);
+        using var kept = new Region(RectangleF.Inflate(item.Bounds, room, room));
+        using (var rubbed = new Region(erased)) kept.Exclude(rubbed);
+        const float Fine = 4;
+        using var fine = new Matrix(Fine, 0, 0, Fine, 0, 0);
+        return [.. kept.GetRegionScans(fine).Select(r => new RectangleF(r.X / Fine, r.Y / Fine, r.Width / Fine, r.Height / Fine))];
+    }
+
     // Outlines --------------------------------------------------------------------------------------------
 
     /// <summary>The outline of a closed shape, in its own frame (before it is turned).</summary>
@@ -112,6 +175,9 @@ public static class ShapeGeometry
                 break;
             case MarkKind.Polygon when item.Strokes.FirstOrDefault() is { Count: >= 3 } corners:
                 AddRounded(path, corners, item.CornerRadius);
+                break;
+            case MarkKind.Path:
+                PathEditing.AddTo(path, item);
                 break;
             default:
                 AddRounded(path, [new(b.Left, b.Top), new(b.Right, b.Top), new(b.Right, b.Bottom), new(b.Left, b.Bottom)], item.CornerRadius);
@@ -292,6 +358,8 @@ public static class ShapeGeometry
         PenKind.Highlighter => 0.35f,
         PenKind.Pencil => 0.55f,
         PenKind.Crayon => 0.6f,
+        PenKind.PaintBrush => 0.85f,
+        PenKind.Watercolor => 0.35f,
         _ => 1,
     };
 
@@ -303,7 +371,8 @@ public static class ShapeGeometry
     /// <summary>
     /// The passes a pen makes along some strokes. A pen draws one steady line; a marker a bold one; a highlighter a
     /// wide see-through band with square ends; a brush swells and tapers; a pencil and a crayon lay several thin,
-    /// slightly wandering passes that break up like graphite or wax on paper. The wander comes from the object's id,
+    /// slightly wandering passes that break up like graphite or wax on paper; a paint brush lays a row of bristles
+    /// that run dry; watercolour lays thin washes over each other. The wander comes from the object's id,
     /// so a stroke looks the same every time it is drawn, on screen and in the PDF.
     /// </summary>
     public static List<InkPiece> InkPieces(PageObject item, IReadOnlyList<List<PointF>> strokes, IReadOnlyList<List<float>> pressures)
@@ -333,6 +402,12 @@ public static class ShapeGeometry
                 case PenKind.Crayon:
                     Grain(pieces, points, Mix(seed, s), passes: 6, Math.Max(0.8f, width * 0.95f), alpha: 0.6f, spread: Math.Max(1f, width * 0.85f), gaps: 0.18f);
                     break;
+                case PenKind.PaintBrush:
+                    Bristles(pieces, points, (IReadOnlyList<float>?)pressure ?? Speeds(points, width), Mix(seed, s), width);
+                    break;
+                case PenKind.Watercolor:
+                    Wash(pieces, points, Mix(seed, s), width);
+                    break;
                 default:
                     Varying(pieces, points, pressure, width, 1, taper: false);
                     break;
@@ -348,6 +423,8 @@ public static class ShapeGeometry
         PenKind.Marker => item.StrokeWidth * 2.4f,
         PenKind.Brush => item.StrokeWidth * 2.4f,
         PenKind.Crayon => item.StrokeWidth * 2.6f,
+        PenKind.PaintBrush => item.StrokeWidth * 2.8f,
+        PenKind.Watercolor => item.StrokeWidth * 3,
         _ => item.StrokeWidth,
     };
 
@@ -399,14 +476,7 @@ public static class ShapeGeometry
             var run = new List<PointF>();
             for (int i = 0; i < points.Count; i++)
             {
-                // A smooth wander: a random offset every few points, eased in between.
-                float position = i / 4f;
-                int knot = (int)position;
-                float blend = position - knot;
-                float offset = spread * (Lerp(Noise(seed, pass, knot), Noise(seed, pass, knot + 1), blend * blend * (3 - 2 * blend)) * 2 - 1);
-                PointF before = points[Math.Max(0, i - 1)], after = points[Math.Min(points.Count - 1, i + 1)];
-                float dx = after.X - before.X, dy = after.Y - before.Y, length = MathF.Sqrt(dx * dx + dy * dy);
-                var shifted = length < 0.001f ? points[i] : new PointF(points[i].X - dy / length * offset, points[i].Y + dx / length * offset);
+                PointF shifted = Wandered(points, i, seed, pass, spread);
                 bool skip = i > 0 && Noise(seed, pass + 101, i) < gaps;
                 if (skip)
                 {
@@ -416,6 +486,66 @@ public static class ShapeGeometry
                 run.Add(shifted);
             }
             if (run.Count >= 2) pieces.Add(new InkPiece([.. run], width, alpha, Square: false));
+        }
+    }
+
+    /// <summary>A point of a stroke moved to one side or the other by a smooth wander: a random offset every few points, eased in between.</summary>
+    static PointF Wandered(List<PointF> points, int i, int seed, int pass, float spread)
+    {
+        float position = i / 4f;
+        int knot = (int)position;
+        float blend = position - knot;
+        float offset = spread * (Lerp(Noise(seed, pass, knot), Noise(seed, pass, knot + 1), blend * blend * (3 - 2 * blend)) * 2 - 1);
+        return Across(points, i, offset);
+    }
+
+    /// <summary>A point of a stroke moved square to the stroke by some distance (to its left for a positive one).</summary>
+    static PointF Across(List<PointF> points, int i, float offset)
+    {
+        PointF before = points[Math.Max(0, i - 1)], after = points[Math.Min(points.Count - 1, i + 1)];
+        float dx = after.X - before.X, dy = after.Y - before.Y, length = MathF.Sqrt(dx * dx + dy * dy);
+        return length < 0.001f ? points[i] : new PointF(points[i].X - dy / length * offset, points[i].Y + dx / length * offset);
+    }
+
+    /// <summary>
+    /// A loaded paint brush: a row of bristles side by side across the stroke, each a thin line of its own and some
+    /// carrying more paint than others. The outer ones run dry before the end, and the row narrows where the brush
+    /// touches down and lifts off, and where it is pressed less (or, without a stylus, moved faster).
+    /// </summary>
+    static void Bristles(List<InkPiece> pieces, List<PointF> points, IReadOnlyList<float> scales, int seed, float width)
+    {
+        const int Count = 9;
+        var along = new float[points.Count];
+        for (int i = 1; i < points.Count; i++) along[i] = along[i - 1] + Distance(points[i - 1], points[i]);
+        float total = along[^1], reach = width * 1.3f;
+        for (int b = 0; b < Count; b++)
+        {
+            float place = b / (Count - 1f) * 2 - 1 + (Noise(seed, b, 0) - 0.5f) * 0.18f;
+            float thickness = width * (0.45f + 0.4f * Noise(seed, b, 1)), alpha = 0.45f + 0.45f * Noise(seed, b, 2);
+            float dry = total * (1 - Math.Abs(place) * (0.15f + 0.35f * Noise(seed, b, 3)));
+            var run = new List<PointF>();
+            for (int i = 0; i < points.Count; i++)
+            {
+                if (i >= 2 && along[i] > dry) break;
+                float scale = Math.Clamp(scales[Math.Min(i, scales.Count - 1)], 0.3f, 1.4f);
+                float ends = Math.Min(1, Math.Min(along[i], total - along[i]) / Math.Max(0.01f, width * 3));
+                run.Add(Across(points, i, place * reach * scale * (0.55f + 0.45f * ends)));
+            }
+            if (run.Count >= 2) pieces.Add(new InkPiece([.. run], thickness, alpha, Square: false));
+        }
+    }
+
+    /// <summary>
+    /// Watercolour: a few wide, thin washes laid over each other, each wandering a little its own way, so the colour
+    /// pools deeper along the middle and fades out at the edges.
+    /// </summary>
+    static void Wash(List<InkPiece> pieces, List<PointF> points, int seed, float width)
+    {
+        for (int pass = 0; pass < 4; pass++)
+        {
+            var run = new PointF[points.Count];
+            for (int i = 0; i < points.Count; i++) run[i] = Wandered(points, i, seed, pass, width * 0.7f);
+            pieces.Add(new InkPiece(run, width * (1.6f + 1.4f * Noise(seed, pass, 7)), 0.16f, Square: false));
         }
     }
 
@@ -464,9 +594,9 @@ public static class ShapeGeometry
 
     // Points -----------------------------------------------------------------------------------------
 
-    internal static float Distance(PointF a, PointF b) => MathF.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+    public static float Distance(PointF a, PointF b) => MathF.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
 
-    internal static PointF Lerp(PointF a, PointF b, float t) => new(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+    public static PointF Lerp(PointF a, PointF b, float t) => new(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
 
     static PointF Toward(PointF from, PointF to, float distance)
     {
@@ -528,6 +658,16 @@ public static class ShapeGeometry
     /// <summary>Fits an object's bounds to its points; a curve's to the curve itself, not its handles.</summary>
     public static void Fit(PageObject item)
     {
+        if (item.Kind == MarkKind.Path)
+        {
+            // Round the path itself, not its handles, which reach out past its curves.
+            using GraphicsPath outline = Outline(item);
+            PointF[] along = outline.PointCount == 0 ? [] : Flatten(outline);
+            if (along.Length == 0) return;
+            float x = along.Min(p => p.X), y = along.Min(p => p.Y);
+            item.Bounds = RectangleF.FromLTRB(x, y, Math.Max(along.Max(p => p.X), x + 1), Math.Max(along.Max(p => p.Y), y + 1));
+            return;
+        }
         if (item.Kind is not (MarkKind.Curve or MarkKind.Spline) || item.Strokes.FirstOrDefault() is not { Count: >= 2 })
         {
             item.FitToStrokes();

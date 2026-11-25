@@ -16,6 +16,13 @@ public static class PdfFiles
     public static PdfDocument OpenForModify(string path, string? password = null) =>
         Open(path, PdfDocumentOpenMode.Modify, password);
 
+    /// <summary>How many pages a PDF has.</summary>
+    public static int PageCount(string path, string? password = null)
+    {
+        using PdfDocument document = OpenForImport(path, password);
+        return document.PageCount;
+    }
+
     /// <summary>Writes next to the target first, so a failed or cancelled save never leaves half a file.</summary>
     public static void Save(PdfDocument document, string path)
     {
