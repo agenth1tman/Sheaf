@@ -171,11 +171,16 @@ page and the selection, and every tool also works from the keyboard.
 
 ## Download
 
-1. Download the latest `Sheaf-win-x64.zip` from the Releases page.
+1. Download the zip for your PC from the Releases page:
+   - **`Sheaf-win-x64.zip`** for most PCs (64-bit Intel or AMD).
+   - **`Sheaf-win-arm64.zip`** for Windows on ARM (Snapdragon laptops, Surface Pro X and the like).
+   - **`Sheaf-win-x86.zip`** for 32-bit Windows 10.
+
+   Not sure? Settings › System › About shows it under "System type".
 2. Unzip it anywhere and run `Sheaf.exe`. There is nothing to install and .NET is not needed.
 
-Works on Windows 10 (version 1809 or later) and Windows 11, 64-bit. The exe isn't code-signed, so SmartScreen may
-warn the first time; choose **More info → Run anyway**.
+Works on Windows 10 (version 1809 or later) and Windows 11. The exe isn't code-signed, so SmartScreen may warn the
+first time; choose **More info → Run anyway**.
 
 Word, Excel and PowerPoint conversions work without Office: Sheaf has its own converters and uses them unless you
 choose otherwise. When Microsoft Office or LibreOffice is installed, each conversion tool can use it instead, for an
@@ -251,10 +256,16 @@ dotnet run --project src/Sheaf
 dotnet test
 ```
 
-Publish one self-contained exe to `src/Sheaf/bin/publish/`:
+Publish one self-contained exe to `src/Sheaf/bin/publish/` (64-bit Intel and AMD):
 
 ```bash
 dotnet publish src/Sheaf/Sheaf.csproj -p:PublishProfile=FolderProfile
+```
+
+For 32-bit Windows or Windows on ARM, name the runtime and a folder of its own (`win-x86` or `win-arm64`):
+
+```bash
+dotnet publish src/Sheaf/Sheaf.csproj -p:PublishProfile=FolderProfile -p:RuntimeIdentifier=win-arm64 -p:PublishDir=bin/publish/win-arm64/
 ```
 
 With a code signing certificate installed, name it by its thumbprint and the published exe is signed and timestamped
