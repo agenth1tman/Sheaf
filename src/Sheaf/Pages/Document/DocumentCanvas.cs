@@ -19,7 +19,7 @@ internal enum EditTool
     RedactRectangle, RedactEllipse, RedactFreeform, RedactText,
     Triangle, SemiCircle, Pie, Curve, SelectText, LiftRectangle, LiftFreeform,
     Heart, Star, Parallelogram,
-    EraseArea, EraseStroke, LiftPen, VertexSelect, PenPath,
+    EraseArea, EraseStroke, LiftPen, VertexSelect, PenPath, Zoom,
 }
 
 /// <summary>
@@ -47,7 +47,15 @@ internal sealed class DocumentCanvas : Panel
     int _currentPage, _selectionPage = -1;
 
     // Interaction state
-    enum Drag { None, Pan, Move, Resize, Create, Marquee, Text, Rotate, Erase, PenHandle, Points, PointHandle }
+    enum Drag { None, Pan, Move, Resize, Create, Marquee, Text, Rotate, Erase, PenHandle, Points, PointHandle, ResizeMany, ZoomScrub }
+
+    // Scrubby zoom: the zoom when the press began, and whether the pointer has moved far enough to be dragging.
+    float _scrubFrom;
+    bool _scrubbed;
+
+    // Resizing several objects at once: each as it was when the drag began, and the box round them all then.
+    List<(PageObject Item, PageObject Was)>? _manyFrom;
+    RectangleF _manyBox;
     Drag _drag;
 
     // Turning with the round handle: about the object's middle, from the angle the drag started at.
@@ -285,6 +293,26 @@ internal sealed class DocumentCanvas : Panel
     public static int MinimumZoom => (int)Math.Round(ZoomSteps[0] * 100);
 
     public static int MaximumZoom => (int)Math.Round(ZoomSteps[^1] * 100);
+
+    /// <summary>
+    /// Zooms to <paramref name="zoom"/> keeping the point of the page under <paramref name="at"/> where it is on
+    /// screen, as a magnifier does.
+    /// </summary>
+    void ZoomAt(float zoom, Point at)
+    {
+        if (Document is null || _pages.Count == 0) return;
+        CommitTextEdit();
+        int page = ToPage(at, out int over, out _) ? over : _currentPage;
+        PointF point = ToPagePointFree(page, at);
+        _zoom = Math.Clamp(zoom, ZoomSteps[0], ZoomSteps[^1]);
+        _fitWidth = false;
+        Relayout();
+        PointF now = ToScreen(page, point);
+        AutoScrollPosition = new Point((int)(-AutoScrollPosition.X + now.X - at.X), (int)(-AutoScrollPosition.Y + now.Y - at.Y));
+        AfterScroll();
+    }
+
+    float NextZoom(bool closer) => closer ? ZoomSteps.FirstOrDefault(step => step > _zoom + 0.001f, ZoomSteps[^1]) : ZoomSteps.LastOrDefault(step => step < _zoom - 0.001f, ZoomSteps[0]);
 
     void SetZoom(float zoom, bool fitWidth)
     {
@@ -797,6 +825,22 @@ internal sealed class DocumentCanvas : Panel
             box.Inflate(Px(7), Px(7));
             g.DrawRectangle(dashed, box.X, box.Y, box.Width, box.Height);
         }
+        if (_selection.Count > 1 && _editing is null && ManyBox() is { } many)
+        {
+            // Several objects: one box round them all, with handles that resize them together.
+            PointF[] corners = [.. BoxPoints(many).Take(8).Select(p => ToScreen(_selectionPage, p))];
+            var frame = RectangleF.FromLTRB(corners.Min(p => p.X), corners.Min(p => p.Y), corners.Max(p => p.X), corners.Max(p => p.Y));
+            frame.Inflate(Px(3), Px(3));
+            g.DrawRectangle(pen, frame.X, frame.Y, frame.Width, frame.Height);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            foreach (RectangleF handle in ManyHandles(many))
+            {
+                g.FillRectangle(Brushes.White, handle);
+                g.DrawRectangle(pen, handle.X, handle.Y, handle.Width, handle.Height);
+            }
+            g.SmoothingMode = SmoothingMode.None;
+            return;
+        }
         if (_selection.Count != 1 || _editing is not null) return;
         PageObject single = _selection[0];
         List<RectangleF> handles = Handles(single, _selectionPage);
@@ -911,7 +955,7 @@ internal sealed class DocumentCanvas : Panel
         if (!CanGroup) return;
         StartChange();
         var group = Guid.NewGuid();
-        foreach (PageObject item in _selection) item.Group = group;
+        foreach (PageObject item in _selection) (item.Group, item.GroupName) = (group, "");
         FinishChange();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
         Announce($"Grouped {_selection.Count} objects");
@@ -921,7 +965,7 @@ internal sealed class DocumentCanvas : Panel
     {
         if (!CanUngroup) return;
         StartChange();
-        foreach (PageObject item in _selection) item.Group = null;
+        foreach (PageObject item in _selection) (item.Group, item.GroupName) = (null, "");
         FinishChange();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
         Announce("Ungrouped");
@@ -982,7 +1026,7 @@ internal sealed class DocumentCanvas : Panel
         else if (Tool == EditTool.Curve) item.Strokes = [[new(box.Left, point.Y), new(point.X, box.Top - box.Height / 2), new(box.Right, point.Y)]];
         else if (Tool == EditTool.Triangle) item.Strokes = [TriangleIn(box)];
         else if (Tool is EditTool.SelectText or EditTool.LiftRectangle or EditTool.LiftFreeform or EditTool.LiftPen or EditTool.EraseArea or EditTool.EraseStroke
-            or EditTool.PenPath or EditTool.VertexSelect)
+            or EditTool.PenPath or EditTool.VertexSelect or EditTool.Zoom)
         {
             Announce("This tool needs a mouse, pen or finger.");
             return;
@@ -1557,6 +1601,19 @@ internal sealed class DocumentCanvas : Panel
             else CancelPicking();
             return;
         }
+        // The zoom tool, as in Photoshop and Illustrator: dragging right zooms in and left zooms out, about the point
+        // pressed; a click zooms in a step there, and Alt or the right button zooms out.
+        if (Tool == EditTool.Zoom && !_spaceDown && e.Button is MouseButtons.Left or MouseButtons.Right)
+        {
+            if (e.Button == MouseButtons.Right || ModifierKeys.HasFlag(Keys.Alt)) ZoomAt(NextZoom(closer: false), e.Location);
+            else
+            {
+                _drag = Drag.ZoomScrub;
+                _scrubFrom = _zoom;
+                _scrubbed = false;
+            }
+            return;
+        }
         if (e.Button == MouseButtons.Right && _textPick is not null)
         {
             ShowTextMenu(e.Location);
@@ -1621,6 +1678,17 @@ internal sealed class DocumentCanvas : Panel
 
         if (Tool == EditTool.Select)
         {
+            if (_selection.Count > 1 && ManyBox() is { } box && ManyHandleAt(e.Location) is int corner)
+            {
+                // Several objects resize together, each scaled from where it sits in the box round them all.
+                _drag = Drag.ResizeMany;
+                _handle = corner;
+                _dragPage = _selectionPage;
+                _pressPage = ToPagePointFree(_dragPage, e.Location);
+                _manyBox = box;
+                _manyFrom = [.. _selection.Where(item => !item.Locked).Select(item => (item, item.Clone()))];
+                return;
+            }
             if (_selection.Count == 1 && HandleAt(e.Location) is int handle and >= 0)
             {
                 PageObject item = _selection[0];
@@ -1883,6 +1951,15 @@ internal sealed class DocumentCanvas : Panel
             case Drag.Resize:
                 ResizeSelection(e);
                 return;
+            case Drag.ResizeMany:
+                ResizeMany(e);
+                return;
+            case Drag.ZoomScrub:
+                if (!_scrubbed && !PastDragThreshold(e.Location)) return;
+                _scrubbed = true;
+                // Doubling for every 150 pixels or so dragged.
+                ZoomAt(_scrubFrom * MathF.Pow(2, (e.X - _pressScreen.X) / (float)Px(150)), _pressScreen);
+                return;
             case Drag.Rotate:
                 TurnByHandle(e);
                 return;
@@ -1986,6 +2063,88 @@ internal sealed class DocumentCanvas : Panel
         // The new box's middle, put back where the old frame shows it, keeps the side not dragged in place.
         PointF middle = ShapeGeometry.ToPage(original, new PointF(local.X + local.Width / 2, local.Y + local.Height / 2))[0];
         item.Resize(new RectangleF(middle.X - local.Width / 2, middle.Y - local.Height / 2, local.Width, local.Height));
+        Invalidate();
+    }
+
+    /// <summary>The box round several chosen objects as they show, or null when any of them is locked or there is one.</summary>
+    RectangleF? ManyBox()
+    {
+        if (_selection.Count < 2 || _selectionPage < 0 || _selectionPage >= _pages.Count || _selection.All(item => item.Locked)) return null;
+        return _selection.Select(ShapeGeometry.VisibleBounds).Aggregate(RectangleF.Union);
+    }
+
+    /// <summary>A box's handle points in page space, in the order single objects use (corners and sides), then its middle.</summary>
+    static PointF[] BoxPoints(RectangleF b)
+    {
+        float cx = b.Left + b.Width / 2, cy = b.Top + b.Height / 2;
+        return [new(b.Left, b.Top), new(cx, b.Top), new(b.Right, b.Top), new(b.Left, cy), new(b.Right, cy),
+            new(b.Left, b.Bottom), new(cx, b.Bottom), new(b.Right, b.Bottom), new(cx, cy)];
+    }
+
+    List<RectangleF> ManyHandles(RectangleF box)
+    {
+        float size = Px(HandleSize), pad = Px(3) / Math.Max(0.01f, PixelsPerPoint);
+        return [.. BoxPoints(RectangleF.Inflate(box, pad, pad)).Take(8).Select(p => ToScreen(_selectionPage, p))
+            .Select(p => new RectangleF(p.X - size / 2, p.Y - size / 2, size, size))];
+    }
+
+    int? ManyHandleAt(Point location)
+    {
+        if (ManyBox() is not { } box) return null;
+        List<RectangleF> handles = ManyHandles(box);
+        for (int i = 0; i < handles.Count; i++)
+            if (RectangleF.Inflate(handles[i], Px(3), Px(3)).Contains(location)) return i;
+        return null;
+    }
+
+    /// <summary>
+    /// Resizes several objects together, as a design app resizes a selection: the box round them stretches from the
+    /// handle held (Shift keeps its shape at a corner), and each object is scaled from where it sat in it. Lines and
+    /// drawings have their points moved; shapes, text and pictures get a new box (and text a matching size).
+    /// </summary>
+    void ResizeMany(MouseEventArgs e)
+    {
+        if (_manyFrom is null || (!_changeStarted && !PastDragThreshold(e.Location))) return;
+        StartChange();
+        PointF point = ToPagePointFree(_dragPage, e.Location);
+        float dx = point.X - _pressPage.X, dy = point.Y - _pressPage.Y;
+        RectangleF start = _manyBox;
+        float left = start.Left, top = start.Top, right = start.Right, bottom = start.Bottom;
+        if (_handle is 0 or 3 or 5) left += dx;
+        if (_handle is 2 or 4 or 7) right += dx;
+        if (_handle is 0 or 1 or 2) top += dy;
+        if (_handle is 5 or 6 or 7) bottom += dy;
+        if (ModifierKeys.HasFlag(Keys.Shift) && _handle is 0 or 2 or 5 or 7 && start.Width > 0)
+        {
+            float ratio = start.Height / start.Width, width = Math.Abs(right - left);
+            if (_handle is 0 or 2) top = bottom - width * ratio; else bottom = top + width * ratio;
+        }
+        if (Math.Abs(right - left) < 4 || Math.Abs(bottom - top) < 4) return;
+        var box = RectangleF.FromLTRB(Math.Min(left, right), Math.Min(top, bottom), Math.Max(left, right), Math.Max(top, bottom));
+        float sx = start.Width < 0.01f ? 1 : box.Width / start.Width, sy = start.Height < 0.01f ? 1 : box.Height / start.Height;
+        PointF Map(PointF p) => new(box.X + (p.X - start.X) * sx, box.Y + (p.Y - start.Y) * sy);
+        foreach (var (item, was) in _manyFrom)
+        {
+            // Back to how it was, then scaled to the new box.
+            item.Bounds = was.Bounds;
+            item.Strokes = [.. was.Strokes.Select(stroke => stroke.ToList())];
+            item.Erased = [.. was.Erased.Select(path => path.ToList())];
+            item.ErasedWidths = [.. was.ErasedWidths];
+            item.FontSize = was.FontSize;
+            if (!ShapeGeometry.TurnsAsBox(item.Kind) && item.Strokes.Count > 0)
+            {
+                using var scale = new Matrix(sx, 0, 0, sy, box.X - start.X * sx, box.Y - start.Y * sy);
+                Transform(item, scale);
+                continue;
+            }
+            // A turned box keeps its turn: its middle moves with the box, and its sides scale along the page's
+            // axes they lie closest to.
+            PointF middle = Map(new PointF(was.X + was.Width / 2, was.Y + was.Height / 2));
+            bool across = Math.Abs(Math.Abs(Normalize(was.Rotation)) - 90) < 45;
+            float width = was.Width * (across ? sy : sx), height = was.Height * (across ? sx : sy);
+            item.Resize(new RectangleF(middle.X - width / 2, middle.Y - height / 2, Math.Max(1, width), Math.Max(1, height)));
+            if (item.Kind == MarkKind.Text) item.FontSize = Math.Max(1, was.FontSize * MathF.Sqrt(sx * sy));
+        }
         Invalidate();
     }
 
@@ -3004,6 +3163,15 @@ internal sealed class DocumentCanvas : Panel
         // A click (no drag) on a curve that was already chosen puts a new point there.
         else if (drag == Drag.Move && !_changeStarted && _pressOnChosen && _selection is [{ Kind: MarkKind.Spline or MarkKind.Curve } curve]
             && ToPage(e.Location, out _, out PointF at)) AddCurvePoint(curve, at);
+        else if (drag == Drag.ZoomScrub)
+        {
+            if (!_scrubbed) ZoomAt(NextZoom(closer: true), _pressScreen);
+        }
+        else if (drag == Drag.ResizeMany)
+        {
+            _manyFrom = null;
+            FinishChange();
+        }
         else if (drag is Drag.Move or Drag.Resize or Drag.Rotate)
         {
             // Let go over another page: the selection goes onto it.
@@ -3175,7 +3343,7 @@ internal sealed class DocumentCanvas : Panel
     /// <summary>Tools that place one object hand back to Select; drawing and marking tools stay on.</summary>
     void FinishTool()
     {
-        if (_tool is EditTool.Select or EditTool.Draw or EditTool.Highlight or EditTool.Underline or EditTool.Strikeout or EditTool.SelectText
+        if (_tool is EditTool.Select or EditTool.Draw or EditTool.Highlight or EditTool.Underline or EditTool.Strikeout or EditTool.SelectText or EditTool.Zoom
             or EditTool.RedactRectangle or EditTool.RedactEllipse or EditTool.RedactFreeform or EditTool.RedactText or EditTool.PenPath or EditTool.VertexSelect)
             return;
         _tool = EditTool.Select;
@@ -3210,6 +3378,7 @@ internal sealed class DocumentCanvas : Panel
             EditTool.Text or EditTool.Date or EditTool.RedactText or EditTool.SelectText => Cursors.IBeam,
             EditTool.Select => SelectCursor(location),
             EditTool.VertexSelect => VertexCursor(location),
+            EditTool.Zoom => CursorArt.Zoom(DeviceDpi, zoomIn: !ModifierKeys.HasFlag(Keys.Alt)),
             _ => Cursors.Cross,
         };
         if (_spaceDown) Cursor = Cursors.Hand;
@@ -3229,6 +3398,15 @@ internal sealed class DocumentCanvas : Panel
     Cursor SelectCursor(Point? location)
     {
         if (location is not { } point || Document is null) return Cursors.Default;
+        if (_selection.Count > 1 && ManyBox() is { } many && ManyHandleAt(point) is int corner)
+        {
+            // Which way the handle pulls on screen, from the middle of the box.
+            PointF at = ToScreen(_selectionPage, BoxPoints(many)[corner]), middle = ToScreen(_selectionPage, BoxPoints(many)[8]);
+            double way = ((Math.Atan2(at.Y - middle.Y, at.X - middle.X) * 180 / Math.PI) % 180 + 180) % 180;
+            bool side = corner is 1 or 3 or 4 or 6;
+            if (side) return Math.Abs(at.Y - middle.Y) < Math.Abs(at.X - middle.X) ? Cursors.SizeWE : Cursors.SizeNS;
+            return way < 90 ? Cursors.SizeNWSE : Cursors.SizeNESW;
+        }
         int handle = HandleAt(point);
         if (handle >= 0)
         {
@@ -3253,7 +3431,8 @@ internal sealed class DocumentCanvas : Panel
         if (e is HandledMouseEventArgs handled) handled.Handled = true;
         if (ModifierKeys.HasFlag(Keys.Control))
         {
-            if (e.Delta > 0) ZoomIn(); else ZoomOut();
+            // Towards or away from the point under the pointer, as a magnifier does.
+            ZoomAt(NextZoom(closer: e.Delta > 0), e.Location);
             return;
         }
         ScrollBy(-e.Delta * Px(WheelStep) / 120);
@@ -3381,7 +3560,8 @@ internal sealed class DocumentCanvas : Panel
         foreach (var (text, style) in TextLayout.Runs(item))
         {
             _editor.Select(at, text.Length);
-            _editor.SelectionFont = EditorFont(style.Bold, style.Italic, style.Underline);
+            _editor.SelectionFont = EditorFont(style);
+            _editor.SelectionCharOffset = EditorOffset(style.Script);
             _editor.SelectionColor = Color.FromArgb(255, Color.FromArgb(style.Color));
             at += text.Length;
         }
@@ -3395,13 +3575,19 @@ internal sealed class DocumentCanvas : Panel
                 e.SuppressKeyPress = true;
                 ToggleEditorStyle(e.KeyCode switch { Keys.B => FontStyle.Bold, Keys.I => FontStyle.Italic, _ => FontStyle.Underline });
             }
+            // As in Word: Ctrl+= lowers, Ctrl+Shift+= raises.
+            else if (e.Control && !e.Alt && e.KeyCode is Keys.Oemplus)
+            {
+                e.SuppressKeyPress = true;
+                ToggleEditorScript(e.Shift ? TextScript.Super : TextScript.Sub);
+            }
         };
         _editor.TextChanged += (_, _) => PositionEditor();
         _editor.SelectionChanged += (_, _) => EditorSelectionChanged?.Invoke(this, EventArgs.Empty);
         _editor.LostFocus += (_, _) => BeginInvoke(() =>
         {
             // Still open while its style is set from the style bar, or a colour is chosen in a dialog.
-            if (_editor is not null && !_editor.Focused && EditingTools?.ContainsFocus != true && Form.ActiveForm == FindForm()) CommitTextEdit();
+            if (_editor is not null && !_editor.Focused && EditingTools?.ContainsFocus != true && !KeepTyping && Form.ActiveForm == FindForm()) CommitTextEdit();
         });
         Controls.Add(_editor);
         PositionEditor();
@@ -3412,19 +3598,77 @@ internal sealed class DocumentCanvas : Panel
         SelectionChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>
+    /// Makes sure a text box is being typed in, for the style bar's raise, lower and symbol buttons: the one already
+    /// open, or the one chosen, opened with the cursor at the end of its text. False when there is none.
+    /// </summary>
+    public bool StartTyping()
+    {
+        if (_editor is not null) return true;
+        if (_selection is not [{ Kind: MarkKind.Text } text] || text.Locked || _selectionPage < 0) return false;
+        BeginTextEdit(_selectionPage, text);
+        _editor?.Select(_editor.TextLength, 0);
+        return _editor is not null;
+    }
+
+    /// <summary>Keeps the text box open while a pop-up of the style bar (the symbols) has the keyboard.</summary>
+    public bool KeepTyping { get; set; }
+
+    /// <summary>Puts the keyboard back in the text box after a dialog closes without changing it.</summary>
+    public void ResumeTyping() => _editor?.Focus();
+
     /// <summary>The words picked in the text box changed: the style bar shows their style.</summary>
     public event EventHandler? EditorSelectionChanged;
 
-    Font EditorFont(bool bold, bool italic, bool underline)
+    /// <summary>The font the text box shows a stretch in: its family, raised or lowered smaller, at the zoom in view.</summary>
+    Font EditorFont(TextStyle style)
     {
-        Font page = PagePainter.FontFor(_editing!, bold, italic);
-        FontStyle style = page.Style | (underline ? FontStyle.Underline : 0);
-        return new Font(page.FontFamily, _editorFont!.Size, style, GraphicsUnit.Pixel);
+        Font page = PagePainter.FontFor(_editing!, style with { Script = TextScript.Normal });
+        FontStyle bits = page.Style | (style.Underline ? FontStyle.Underline : 0);
+        float size = _editorFont!.Size * style.Script switch
+        {
+            TextScript.Normal => 1,
+            TextScript.Over or TextScript.Under => TextLayout.FractionScale,
+            _ => TextLayout.ScriptScale,
+        };
+        return new Font(page.FontFamily, Math.Max(1, size), bits, GraphicsUnit.Pixel);
+    }
+
+    /// <summary>How far a stretch is raised in the text box, in pixels (lowered below zero).</summary>
+    int EditorOffset(TextScript script) => script switch
+    {
+        TextScript.Super => (int)Math.Round(_editorFont!.Size * 0.33f),
+        TextScript.Sub => -(int)Math.Round(_editorFont!.Size * 0.15f),
+        // A fraction can't stack in the text box: its top shows higher than a power, its bottom lower than a subscript.
+        TextScript.Over => (int)Math.Round(_editorFont!.Size * 0.45f),
+        TextScript.Under => -(int)Math.Round(_editorFont!.Size * 0.30f),
+        _ => 0,
+    };
+
+    /// <summary>Which place a character's raise in the text box stands for, by how far it is raised (or lowered).</summary>
+    static TextScript ScriptOf(int offset, float size) => offset switch
+    {
+        > 0 => offset >= size * 0.39f ? TextScript.Over : TextScript.Super,
+        < 0 => offset <= -size * 0.225f ? TextScript.Under : TextScript.Sub,
+        _ => TextScript.Normal,
+    };
+
+    /// <summary>The style of the text box's selection (its first character's, or what is typed next with none picked).</summary>
+    TextStyle EditorCharStyle()
+    {
+        Font font = _editor!.SelectionFont ?? _editor.Font;
+        string family = font.FontFamily.Name;
+        string own = PagePainter.FontFor(_editing!).FontFamily.Name;
+        int offset = _editor.SelectionCharOffset;
+        return new TextStyle(font.Bold, font.Italic, font.Underline, Color.FromArgb(255, _editor.SelectionColor).ToArgb(),
+            ScriptOf(offset, _editorFont!.Size), family == own ? null : family);
     }
 
     /// <summary>The style of the words picked in the text box (of the first of them when they differ).</summary>
-    public (bool Bold, bool Italic, bool Underline, Color Color)? EditorStyle =>
-        _editor is { SelectionFont: { } font } editor ? (font.Bold, font.Italic, font.Underline, editor.SelectionColor) : null;
+    public (bool Bold, bool Italic, bool Underline, Color Color, TextScript Script)? EditorStyle =>
+        _editor is { SelectionFont: { } font } editor
+            ? (font.Bold, font.Italic, font.Underline, editor.SelectionColor, ScriptOf(editor.SelectionCharOffset, editor.Font.Size))
+            : null;
 
     /// <summary>
     /// Makes the words picked in the text box bold, italic or underlined, or takes that off when they all have it;
@@ -3434,6 +3678,20 @@ internal sealed class DocumentCanvas : Panel
     {
         if (_editor is null) return;
         int start = _editor.SelectionStart, length = _editor.SelectionLength;
+        if (length == 0)
+        {
+            // Nothing picked: the style goes on what is typed next. Moving the cursor, even to where it is, would drop it.
+            TextStyle next = EditorCharStyle();
+            _editor.SelectionFont = EditorFont(toggle switch
+            {
+                FontStyle.Bold => next with { Bold = !next.Bold },
+                FontStyle.Italic => next with { Italic = !next.Italic },
+                _ => next with { Underline = !next.Underline },
+            });
+            _editor.Focus();
+            EditorSelectionChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
         bool all = true;
         for (int i = 0; i < Math.Max(1, length) && all; i++)
         {
@@ -3443,11 +3701,77 @@ internal sealed class DocumentCanvas : Panel
         for (int i = 0; i < Math.Max(1, length); i++)
         {
             _editor.Select(start + i, length == 0 ? 0 : 1);
-            Font current = _editor.SelectionFont ?? _editor.Font;
-            FontStyle style = all ? current.Style & ~toggle : current.Style | toggle;
-            _editor.SelectionFont = EditorFont(style.HasFlag(FontStyle.Bold), style.HasFlag(FontStyle.Italic), style.HasFlag(FontStyle.Underline));
+            TextStyle current = EditorCharStyle();
+            bool on = !all;
+            _editor.SelectionFont = EditorFont(toggle switch
+            {
+                FontStyle.Bold => current with { Bold = on },
+                FontStyle.Italic => current with { Italic = on },
+                _ => current with { Underline = on },
+            });
         }
         _editor.Select(start, length);
+        _editor.Focus();
+        EditorSelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Raises the words picked in the text box small (x²) or lowers them (H₂O), or puts them back on the line when they
+    /// all are already; with nothing picked, it applies to what is typed next.
+    /// </summary>
+    public void ToggleEditorScript(TextScript script)
+    {
+        if (_editor is null) return;
+        int start = _editor.SelectionStart, length = _editor.SelectionLength;
+        if (length == 0)
+        {
+            // Nothing picked: what is typed next is raised or lowered (or put back). Moving the cursor would drop it.
+            TextStyle next = EditorCharStyle();
+            TextScript wanted = next.Script == script ? TextScript.Normal : script;
+            _editor.SelectionFont = EditorFont(next with { Script = wanted });
+            _editor.SelectionCharOffset = EditorOffset(wanted);
+            _editor.Focus();
+            EditorSelectionChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+        bool all = true;
+        for (int i = 0; i < Math.Max(1, length) && all; i++)
+        {
+            _editor.Select(start + i, 1);
+            all = EditorCharStyle().Script == script;
+        }
+        TextScript to = all ? TextScript.Normal : script;
+        for (int i = 0; i < Math.Max(1, length); i++)
+        {
+            _editor.Select(start + i, length == 0 ? 0 : 1);
+            TextStyle current = EditorCharStyle() with { Script = to };
+            _editor.SelectionFont = EditorFont(current);
+            _editor.SelectionCharOffset = EditorOffset(to);
+        }
+        _editor.Select(start, length);
+        _editor.Focus();
+        EditorSelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Types text into the text box at the cursor (over the words picked), in stretches raised, lowered or on the line,
+    /// in <paramref name="font"/> when given; typing after it goes on in the style it had before.
+    /// </summary>
+    public void InsertIntoEditor(IEnumerable<(string Text, TextScript Script)> runs, string? font)
+    {
+        if (_editor is null) return;
+        TextStyle before = EditorCharStyle();
+        foreach (var (text, script) in runs)
+        {
+            int at = _editor.SelectionStart;
+            _editor.SelectedText = text;
+            _editor.Select(at, text.Length);
+            _editor.SelectionFont = EditorFont(before with { Script = script, Font = font ?? before.Font, Bold = before.Bold && font is null, Italic = before.Italic && font is null });
+            _editor.SelectionCharOffset = EditorOffset(script);
+            _editor.Select(at + text.Length, 0);
+        }
+        _editor.SelectionFont = EditorFont(before with { Script = TextScript.Normal });
+        _editor.SelectionCharOffset = 0;
         _editor.Focus();
         EditorSelectionChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -3465,10 +3789,12 @@ internal sealed class DocumentCanvas : Panel
     {
         var spans = new List<TextSpan>();
         int alpha = (item.StrokeColor >> 24) & 0xFF;
+        string own = PagePainter.FontFor(item).FontFamily.Name;
         for (int i = 0; i < editor.TextLength; i++)
         {
             editor.Select(i, 1);
             Font? font = editor.SelectionFont;
+            int offset = editor.SelectionCharOffset;
             var span = new TextSpan
             {
                 Length = 1,
@@ -3476,6 +3802,8 @@ internal sealed class DocumentCanvas : Panel
                 Italic = font?.Italic ?? item.Italic,
                 Underline = font?.Underline ?? false,
                 Color = Color.FromArgb(alpha, editor.SelectionColor).ToArgb(),
+                Script = ScriptOf(offset, editor.Font.Size),
+                Font = font is null || font.FontFamily.Name == own ? "" : font.FontFamily.Name,
             };
             if (spans.Count > 0 && spans[^1] with { Length = 1 } == span) spans[^1].Length++;
             else spans.Add(span);
@@ -3505,7 +3833,7 @@ internal sealed class DocumentCanvas : Panel
         // One style end to end is kept as the box's own style; otherwise each stretch keeps its own.
         editor.Visible = false;
         List<TextSpan> spans = SpansOf(editor, item);
-        bool plain = spans.Count <= 1 && !spans.Any(span => span.Underline);
+        bool plain = spans.Count <= 1 && !spans.Any(span => span.Underline || span.Script != TextScript.Normal || span.Font.Length > 0);
         Controls.Remove(editor);
         editor.Dispose();
         _editorFont?.Dispose();

@@ -30,6 +30,10 @@ internal sealed class StyleBar : Surface
     readonly AppButton _bold = Toggle("bold", "Bold");
     readonly AppButton _italic = Toggle("italic", "Italic");
     readonly AppButton _underline = Toggle("underline", "Underline");
+    readonly AppButton _superscript = Toggle("superscript", "Superscript");
+    readonly AppButton _subscript = Toggle("subscript", "Subscript");
+    readonly AppButton _symbol = Toggle("symbol", "Insert Symbol");
+    readonly AppButton _equation = Toggle("equation", "Insert Equation");
     readonly AppButton _left = Toggle("align-left", "Align Left");
     readonly AppButton _center = Toggle("align-center", "Centre");
     readonly AppButton _right = Toggle("align-right", "Align Right");
@@ -134,7 +138,7 @@ internal sealed class StyleBar : Surface
         Tips.Shared.SetToolTip(_middle, "Text in the middle of the box");
         Tips.Shared.SetToolTip(_bottom, "Text at the bottom of the box");
 
-        _row.Controls.AddRange([_kind, _eraserCaption, _eraserSize, _hint, _font, _size, _bold, _italic, _underline, _split1, _left, _center, _right, _justify, _split5, _top, _middle, _bottom, _split2,
+        _row.Controls.AddRange([_kind, _eraserCaption, _eraserSize, _hint, _font, _size, _bold, _italic, _underline, _superscript, _subscript, _symbol, _equation, _split1, _left, _center, _right, _justify, _split5, _top, _middle, _bottom, _split2,
             _crop, _tintCaption, _tint, _split4, _pens,
             _ink, _fillCaption, _fill, _widthCaption, _width, _endsCaption, _startEnd, _endEnd, _cornersCaption, _corners, _sweepCaption, _sweep,
             _opacityCaption, _opacity, _split3, .. _align.Select(entry => entry.Button), _distributeAcross, _distributeDown, _split6,
@@ -184,6 +188,28 @@ internal sealed class StyleBar : Surface
         Tips.Shared.SetToolTip(_bold, "Bold (Ctrl+B)\nWhile typing, makes the words you pick bold");
         Tips.Shared.SetToolTip(_italic, "Italic (Ctrl+I)\nWhile typing, makes the words you pick italic");
         Tips.Shared.SetToolTip(_underline, "Underline (Ctrl+U)\nWhile typing, underlines the words you pick");
+        Tips.Shared.SetToolTip(_superscript, "Superscript (Ctrl+Shift+=)\nRaises the words you pick, small: x²");
+        Tips.Shared.SetToolTip(_subscript, "Subscript (Ctrl+=)\nLowers the words you pick, small: H₂O");
+        Tips.Shared.SetToolTip(_symbol, "Insert a symbol\nGreek letters, maths signs, arrows and units");
+        Tips.Shared.SetToolTip(_equation, "Insert an equation\nType x^2, v_0, \\alpha, <= and the like; Sheaf sets it out");
+        _superscript.Click += (_, _) => { if (_canvas.StartTyping()) _canvas.ToggleEditorScript(TextScript.Super); };
+        _subscript.Click += (_, _) => { if (_canvas.StartTyping()) _canvas.ToggleEditorScript(TextScript.Sub); };
+        _symbol.Click += (_, _) =>
+        {
+            if (!_canvas.StartTyping()) return;
+            _canvas.KeepTyping = true;
+            SymbolPicker.Show(_symbol, symbol => _canvas.InsertIntoEditor([(symbol, TextScript.Normal)], MathText.SymbolFont), () =>
+            {
+                _canvas.KeepTyping = false;
+                _canvas.ResumeTyping();
+            });
+        };
+        _equation.Click += (_, _) =>
+        {
+            if (!_canvas.StartTyping()) return;
+            if (EquationDialog.Ask(FindForm()) is { Count: > 0 } runs) _canvas.InsertIntoEditor(runs, MathText.SymbolFont);
+            else _canvas.ResumeTyping();
+        };
         _bold.Click += (_, _) =>
         {
             if (_canvas.IsEditingText) { _canvas.ToggleEditorStyle(FontStyle.Bold); return; }
@@ -353,11 +379,13 @@ internal sealed class StyleBar : Surface
     /// <summary>While text is typed: the toggles and colour show the style of the words picked in it.</summary>
     public void SyncEditing()
     {
-        if (_canvas.EditorStyle is not var (bold, italic, underline, color)) return;
+        if (_canvas.EditorStyle is not var (bold, italic, underline, color, script)) return;
         _syncing = true;
         _bold.Selected = bold;
         _italic.Selected = italic;
         _underline.Selected = underline;
+        _superscript.Selected = script == TextScript.Super;
+        _subscript.Selected = script == TextScript.Sub;
         _ink.Color = color;
         _syncing = false;
     }
@@ -482,7 +510,7 @@ internal sealed class StyleBar : Surface
         bool grouped = selection.Count > 1 && selection.All(item => item.Group is not null) && selection.Select(item => item.Group).Distinct().Count() == 1;
         _kind.Text = typing is not null ? "Text box"
             : hasSelection
-            ? grouped ? $"Group of {selection.Count}" : selection.Count == 1 ? KindName(selection[0]) : $"{selection.Count} objects"
+            ? grouped ? ToolStyles.GroupTitle(selection) : selection.Count == 1 ? KindName(selection[0]) : $"{selection.Count} objects"
             : family == StyleFamily.None ? "" : ToolName(_canvas.Tool);
         _kind.Visible = _kind.Text.Length > 0;
         _hint.Text = !hasSelection && (family is StyleFamily.None or StyleFamily.Redaction || _canvas.Tool == EditTool.PenPath)
@@ -490,6 +518,7 @@ internal sealed class StyleBar : Surface
             {
                 EditTool.SelectText => "Drag across the text to pick it, then press Ctrl+C to copy it.",
                 EditTool.PenPath => "Click for corners, drag for curves. Click the first point to close; Enter ends.",
+                EditTool.Zoom => "Drag right to zoom in, left to zoom out. Click to zoom in a step, Alt+click or right-click to zoom out. Ctrl+wheel zooms at the pointer.",
                 EditTool.VertexSelect => "Click a shape, line or drawing, then drag its points. Alt-drag a point for curve handles; double-click the outline to add a point.",
                 EditTool.LiftRectangle or EditTool.LiftFreeform => "Drag around part of the page to cut it out and move it. White is left behind.",
                 EditTool.LiftPen => "Click round the part to lift, point by point (drag to curve). Click the first point (or press Enter) to lift it; Backspace takes a point back.",
@@ -510,6 +539,10 @@ internal sealed class StyleBar : Surface
         bool coloured = family is StyleFamily.Text or StyleFamily.Shape or StyleFamily.Line or StyleFamily.Ink or StyleFamily.Highlight or StyleFamily.Markup or StyleFamily.Note;
         bool opacity = family is StyleFamily.Text or StyleFamily.Shape or StyleFamily.Line or StyleFamily.Ink or StyleFamily.Highlight or StyleFamily.Image;
         _font.Visible = _size.Visible = _bold.Visible = _italic.Visible = _underline.Visible = _split1.Visible = text;
+        // Raising, lowering and symbols work on a text box: the one being typed in, or the one chosen.
+        _superscript.Visible = _subscript.Visible = _symbol.Visible = _equation.Visible = text;
+        _superscript.Enabled = _subscript.Enabled = _symbol.Enabled = _equation.Enabled = typing is not null || selection is [{ Kind: MarkKind.Text }];
+        if (typing is null) _superscript.Selected = _subscript.Selected = false;
         _left.Visible = _center.Visible = _right.Visible = _justify.Visible = _split2.Visible = text;
         _top.Visible = _middle.Visible = _bottom.Visible = _split5.Visible = text;
         // Ends belong to a drawn line; each line tool starts plain or with its arrow.

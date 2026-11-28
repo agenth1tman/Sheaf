@@ -209,17 +209,22 @@ internal static class PagePainter
 
     public static Font FontFor(PageObject item) => FontFor(item, item.Bold, item.Italic);
 
-    public static Font FontFor(PageObject item, bool bold, bool italic)
+    public static Font FontFor(PageObject item, bool bold, bool italic) => FontFor(item.FontFamily, item.FontSize, bold, italic);
+
+    /// <summary>The font a stretch of a text box is drawn in: its own family (symbols) and size (raised or lowered).</summary>
+    public static Font FontFor(PageObject item, TextStyle style) => FontFor(TextLayout.FamilyOf(item, style), TextLayout.SizeOf(item, style), style.Bold, style.Italic);
+
+    static Font FontFor(string name, float size, bool bold, bool italic)
     {
         FontStyle style = (bold ? FontStyle.Bold : 0) | (italic ? FontStyle.Italic : 0);
-        var key = (item.FontFamily, Math.Max(1, item.FontSize), style);
+        var key = (name, Math.Max(1, size), style);
         if (Fonts.TryGetValue(key, out Font? font)) return font;
-        FontFamily family = item.FontFamily switch
+        FontFamily family = name switch
         {
             "Geist" => AppFonts.RegularFamily,
             "Geist Mono" => AppFonts.Mono.FontFamily,
             "Sacramento" => AppFonts.SignatureFamily,
-            _ => TrySystemFamily(item.FontFamily),
+            _ => TrySystemFamily(name),
         };
         font = new Font(family, key.Item2, family.IsStyleAvailable(style) ? style : FontStyle.Regular, GraphicsUnit.Pixel);
         Fonts[key] = font;
@@ -292,7 +297,8 @@ internal static class PagePainter
 
     /// <summary>A text box whose words have styles of their own, laid out as the saved PDF lays it out.</summary>
     static List<TextLine> StyledLines(Graphics g, PageObject item, float width) =>
-        TextLayout.Lay(item, width, (text, style) => g.MeasureString(text, FontFor(item, style.Bold, style.Italic), PointF.Empty, Measuring).Width,
+        TextLayout.Lay(item, width, (text, style) => g.MeasureString(text, FontFor(item, style), PointF.Empty, Measuring).Width,
+            // A line is as tall as the box's own font makes it, whatever symbols or small raised letters are on it.
             style => FontFor(item, style.Bold, style.Italic).GetHeight(g));
 
     static void DrawStyledText(Graphics g, PageObject item, RectangleF rect)
@@ -313,9 +319,17 @@ internal static class PagePainter
         foreach (TextLine line in lines)
             foreach (TextPiece piece in line.Pieces)
             {
-                Font font = FontFor(item, piece.Style.Bold, piece.Style.Italic);
+                if (piece.Bar)
+                {
+                    // A fraction's bar, across the wider of its top and bottom.
+                    float barY = (rect.Y + Inset + shift + line.Top + line.Lead + TextLayout.BarDrop(item)) * scale + dy;
+                    using var bar = new Pen(WithAlpha(piece.Style.Color, item.Opacity), TextLayout.BarThickness(item) * scale);
+                    g.DrawLine(bar, (rect.X + Inset + piece.X) * scale + dx, barY, (rect.X + Inset + piece.X + piece.Width) * scale + dx, barY);
+                    continue;
+                }
+                Font font = FontFor(item, piece.Style);
                 if (upright) font = ScreenFont(font, scale);
-                float x = (rect.X + Inset + piece.X) * scale + dx, y = (rect.Y + Inset + shift + line.Top) * scale + dy;
+                float x = (rect.X + Inset + piece.X) * scale + dx, y = (rect.Y + Inset + shift + line.Top + line.Lead + TextLayout.Drop(item, piece.Style)) * scale + dy;
                 using var brush = new SolidBrush(WithAlpha(piece.Style.Color, item.Opacity));
                 GraphicsState slanted = g.Save();
                 if (piece.Style.Italic && !font.Italic)

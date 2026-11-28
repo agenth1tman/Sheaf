@@ -74,6 +74,14 @@ internal sealed class ObjectList : Panel, IItemHost
     /// <summary>Delete was pressed in a list whose action isn't removing (layers): delete what is chosen.</summary>
     public event EventHandler? DeleteRequested;
 
+    /// <summary>A row was given a new name (layer lists): by double-clicking its name, F2, or <see cref="BeginRename"/>.</summary>
+    public event EventHandler<(ObjectRow Row, string Name)>? Renamed;
+
+    // The box a row's name is typed into, and the row it names (by its object, as rows are rebuilt while typing).
+    TextBox? _renameBox;
+    Guid _renaming;
+    bool _renamingGroup;
+
     public IReadOnlyList<ObjectRow> Rows => _rows;
 
     /// <summary>Whether a group's row shows its objects under it; null when groups can't fold.</summary>
@@ -196,6 +204,8 @@ internal sealed class ObjectList : Panel, IItemHost
         }
         if (Focused && ShowFocusCues && (_focus >= 0 && _focus < _rows.Count ? _focus : Current) is int focus and >= 0)
             Draw.FocusRing(g, Rectangle.Inflate(RowBounds(focus), -LogicalToDeviceUnits(8), -LogicalToDeviceUnits(1)), LogicalToDeviceUnits(Theme.Radius), LogicalToDeviceUnits(2));
+        // The name box follows its row as the list scrolls or changes.
+        if (_renameBox is not null && RowOf(_renaming, _renamingGroup) is int renamed and >= 0) PlaceRenameBox(renamed);
         if (_dragging) DrawDropTarget(g);
         if (_band is { } band)
         {
@@ -230,6 +240,72 @@ internal sealed class ObjectList : Panel, IItemHost
         g.FillEllipse(line, left - thick * 2, y - thick * 2, thick * 4, thick * 4);
     }
 
+
+    /// <summary>Where a row's name is drawn: after its fold arrow and icon, up to its buttons.</summary>
+    Rectangle TitleBounds(int index)
+    {
+        Rectangle row = RowBounds(index), box = Rectangle.Inflate(row, -LogicalToDeviceUnits(8), -LogicalToDeviceUnits(1));
+        ObjectRow item = _rows[index];
+        int x = box.X + LogicalToDeviceUnits(item.Indented ? 26 : 10) + (item.Members is not null && IsOpen is not null ? LogicalToDeviceUnits(16) : 0)
+            + LogicalToDeviceUnits(IconSize) + LogicalToDeviceUnits(10);
+        int right = Action is null ? box.Right - LogicalToDeviceUnits(8) : (HasLock ? LockBounds(row) : ActionBounds(row)).Left - LogicalToDeviceUnits(4);
+        return Rectangle.FromLTRB(x, row.Top, Math.Max(x + 1, right), row.Bottom);
+    }
+
+    int RowOf(Guid id, bool group) => _rows.FindIndex(row => row.Item.Id == id && (row.Members is not null) == group);
+
+    /// <summary>Opens a box over a row's name to type a new one in: Enter keeps it, Escape leaves the name as it was.</summary>
+    public void BeginRename(ObjectRow row)
+    {
+        int index = _rows.IndexOf(row);
+        if (Renamed is null || index < 0) return;
+        EndRename(keep: false);
+        _renaming = row.Item.Id;
+        _renamingGroup = row.Members is not null;
+        _renameBox = new TextBox
+        {
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = AppFonts.Body,
+            BackColor = Theme.Current.Raised,
+            ForeColor = Theme.Current.Text,
+            Text = row.Title,
+            AccessibleName = row.Members is null ? "Layer name" : "Group name",
+        };
+        _renameBox.ContextMenuStrip = Menus.ForText(_renameBox);
+        _renameBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode is not (Keys.Enter or Keys.Escape)) return;
+            e.SuppressKeyPress = true;
+            EndRename(keep: e.KeyCode == Keys.Enter);
+            Focus();
+        };
+        _renameBox.LostFocus += (_, _) => BeginInvoke(() => EndRename(keep: true));
+        Controls.Add(_renameBox);
+        PlaceRenameBox(index);
+        _renameBox.Focus();
+        _renameBox.SelectAll();
+    }
+
+    void PlaceRenameBox(int index)
+    {
+        if (_renameBox is null) return;
+        Rectangle title = TitleBounds(index);
+        int height = _renameBox.PreferredHeight;
+        var bounds = new Rectangle(title.X - LogicalToDeviceUnits(4), title.Y + (RowHeight - height) / 2, title.Width + LogicalToDeviceUnits(4), height);
+        if (_renameBox.Bounds != bounds) _renameBox.Bounds = bounds;
+    }
+
+    void EndRename(bool keep)
+    {
+        if (_renameBox is not { } box) return;
+        _renameBox = null;
+        string name = box.Text;
+        Controls.Remove(box);
+        box.Dispose();
+        int index = RowOf(_renaming, _renamingGroup);
+        if (keep && index >= 0 && name.Trim() != _rows[index].Title) Renamed?.Invoke(this, (_rows[index], name));
+        Invalidate();
+    }
 
     int IndexAt(Point point)
     {
@@ -326,6 +402,14 @@ internal sealed class ObjectList : Panel, IItemHost
         if (Action is not null && ActionBounds(RowBounds(index)).Contains(e.Location))
         {
             ActionClicked?.Invoke(this, row);
+            return;
+        }
+        // A double-click on the name opens it for typing a new one.
+        if (e.Clicks == 2 && Renamed is not null && TitleBounds(index).Contains(e.Location))
+        {
+            if (!IsSelected(row)) Pick(row);
+            _leftDown = false;
+            BeginRename(row);
             return;
         }
         if (MultiSelect && ModifierKeys.HasFlag(Keys.Shift) && _anchor >= 0) PickRun(_anchor, index);
@@ -471,6 +555,11 @@ internal sealed class ObjectList : Panel, IItemHost
         {
             _selected = [.. _rows.SelectMany(row => row.Objects).Select(item => item.Id)];
             ChoseMany(current);
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.F2 && current >= 0 && Renamed is not null)
+        {
+            BeginRename(_rows[current]);
             e.Handled = true;
         }
         else if (e.KeyCode == Keys.Delete && DeleteRequested is not null && _selected.Count > 0)

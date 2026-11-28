@@ -89,8 +89,13 @@ internal sealed class DocumentPage : TabContent
         SuspendLayout();
         BuildLayout();
         WireEvents();
+        _built = true;
         ResumeLayout(false);
     }
+
+    // Set once the constructor has made every part. Windows rescales a new tab to the screen's scaling (125 %, 150 %)
+    // while it is still being built, and fitting it to its width before then would reach parts not made yet.
+    bool _built;
 
     public string? FilePath => _path;
 
@@ -552,6 +557,7 @@ internal sealed class DocumentPage : TabContent
     /// </summary>
     void FitToWidth()
     {
+        if (!_built) return;
         int width = (int)Math.Round(Width * 96f / Math.Max(96, DeviceDpi));
         if (width <= 0) return;
         bool narrowPages = width < 1150, narrowSide = width < 940, narrowBars = width < 1120, narrowHeader = width < 900;

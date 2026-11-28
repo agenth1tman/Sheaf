@@ -134,7 +134,7 @@ static class OverlayWriter
         formatter.DrawString(item.Text, font, new XSolidBrush(Color(item.StrokeColor, item.Opacity)), area, XStringFormats.TopLeft);
     }
 
-    static XFont FontOf(PageObject item, TextStyle style) => new(item.FontFamily, item.FontSize, (style.Bold, style.Italic) switch
+    static XFont FontOf(PageObject item, TextStyle style) => new(TextLayout.FamilyOf(item, style), TextLayout.SizeOf(item, style), (style.Bold, style.Italic) switch
     {
         (true, true) => XFontStyleEx.BoldItalic,
         (true, false) => XFontStyleEx.Bold,
@@ -150,16 +150,24 @@ static class OverlayWriter
             : fonts[style with { Underline = false, Color = 0 }] = FontOf(item, style);
         const double Inset = 2;
         float width = (float)Math.Max(1, rect.Width - 2 * Inset);
+        // A line is as tall as the box's own font makes it, whatever symbols or small raised letters are on it.
         List<TextLine> lines = TextLayout.Lay(item, width, (text, style) => (float)g.MeasureString(text, Font(style), XStringFormats.TopLeft).Width,
-            style => (float)Font(style).GetHeight());
+            style => (float)Font(style with { Script = TextScript.Normal, Font = null }).GetHeight());
         double height = lines.Sum(line => line.Height);
         double spare = Math.Max(0, rect.Height - 2 * Inset - height);
         double shift = item.Anchor switch { TextAnchor.Middle => spare / 2, TextAnchor.Bottom => spare, _ => 0 };
         foreach (TextLine line in lines)
             foreach (TextPiece piece in line.Pieces)
             {
+                if (piece.Bar)
+                {
+                    // A fraction's bar, across the wider of its top and bottom.
+                    double barY = rect.Y + Inset + shift + line.Top + line.Lead + TextLayout.BarDrop(item);
+                    g.DrawLine(new XPen(Color(piece.Style.Color, item.Opacity), TextLayout.BarThickness(item)), rect.X + Inset + piece.X, barY, rect.X + Inset + piece.X + piece.Width, barY);
+                    continue;
+                }
                 XFont font = Font(piece.Style);
-                double x = rect.X + Inset + piece.X, y = rect.Y + Inset + shift + line.Top;
+                double x = rect.X + Inset + piece.X, y = rect.Y + Inset + shift + line.Top + line.Lead + TextLayout.Drop(item, piece.Style);
                 var brush = new XSolidBrush(Color(piece.Style.Color, item.Opacity));
                 if (piece.Text.Trim().Length > 0) g.DrawString(piece.Text, font, brush, x, y, XStringFormats.TopLeft);
                 if (!piece.Style.Underline) continue;

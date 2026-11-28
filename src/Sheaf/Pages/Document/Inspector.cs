@@ -40,6 +40,8 @@ internal sealed class Inspector : Surface
         if (_savingHint is null) return;
         int height = (int)Math.Round(Height * 96f / Math.Max(96, DeviceDpi));
         _savingHint.Visible = height <= 0 || height >= 560;
+        // Under 700 the page colour's note goes too (its words stay in the colour's tooltip), leaving the layers room.
+        _paperHint.Visible = height <= 0 || height >= 700;
     }
     readonly TextLabel _layersHeading = Make.PanelHeading("Layers");
     readonly InputBox _x = Coordinate("X"), _y = Coordinate("Y"), _w = Coordinate("Width"), _h = Coordinate("Height");
@@ -91,6 +93,11 @@ internal sealed class Inspector : Surface
         _properties.Controls.Add(Rule());
         _properties.Controls.Add(_savingSection);
         _comments.Visible = false;
+        // On a short window the layers keep room for a few rows and the panel scrolls instead of squeezing them.
+        _properties.AutoScroll = true;
+        _properties.Layout += (_, _) => QueueLayersRoom();
+        _properties.HandleCreated += (_, _) => Platform.Native.SetScrollbarTheme(_properties.Handle, Theme.IsDark);
+        Theme.Changed += (_, _) => { if (_properties.IsHandleCreated) Platform.Native.SetScrollbarTheme(_properties.Handle, Theme.IsDark); };
 
         var tabsHost = new Panel { Dock = DockStyle.Top, Height = 50, Padding = new Padding(12, 10, 12, 6) };
         tabsHost.Controls.Add(_tabs);
@@ -118,6 +125,7 @@ internal sealed class Inspector : Surface
             Sync();
         };
         _layers.DeleteRequested += (_, _) => _canvas.DeleteSelection();
+        _layers.Renamed += (_, rename) => RenameLayer(rename.Row, rename.Name);
         Tips.Shared.SetToolTip(_newGroup, "New group from selection (Ctrl+G)\nChoose two or more layers first: Ctrl+click or Shift+click them");
         Tips.Shared.SetToolTip(_ungroup, "Ungroup (Ctrl+Shift+G)\nChoose a group first");
         Tips.Shared.SetToolTip(_hide, "Hide or show\nChoose a layer first");
@@ -210,11 +218,35 @@ internal sealed class Inspector : Surface
     /// <summary>A colour was chosen for the page in view (none: see-through).</summary>
     public event EventHandler<Color>? PaperChosen;
 
+    /// <summary>
+    /// The height the panel needs for its sections and about five layer rows; when the window is shorter, the panel
+    /// scrolls rather than leave the layers a sliver.
+    /// </summary>
+    void QueueLayersRoom()
+    {
+        // Measured once the change in hand is laid out: sections come and go during one, and measuring each step
+        // flashed a scroll bar that wasn't needed.
+        if (_roomQueued || !IsHandleCreated) return;
+        _roomQueued = true;
+        BeginInvoke(KeepLayersRoom);
+    }
+
+    bool _roomQueued;
+
+    void KeepLayersRoom()
+    {
+        _roomQueued = false;
+        int sections = _properties.Controls.Cast<Control>().Where(part => part.Visible && part != _layers).Sum(part => part.Height);
+        var needed = new Size(0, sections + LogicalToDeviceUnits(5 * 34 + 8));
+        if (_properties.AutoScrollMinSize != needed) _properties.AutoScrollMinSize = needed;
+    }
+
     public void Sync()
     {
         if (_canvas.Document is not { } document) return;
         _syncing = true;
         SuspendLayout();
+        _properties.SuspendLayout();
         IReadOnlyList<PageObject> selection = _canvas.Selection;
         PageObject? single = selection.Count == 1 ? selection[0] : null;
 
@@ -227,6 +259,7 @@ internal sealed class Inspector : Surface
             _paper.Color = entry.IsBlank ? Color.FromArgb(entry.Background) : Color.White;
             _paperHint.Text = entry.IsBlank ? $"Page {_canvas.CurrentPage + 1}. Right-click pages in the strip to colour several."
                 : "Pages from a PDF keep their own paper. Add a blank page (the + by Pages) to choose its colour.";
+            Tips.Shared.SetToolTip(_paper, _paperHint.Text);
         }
         if (_geometry.Height > 0) _pageSection.MinimumSize = new Size(0, _geometry.Height);
         _pageSection.Visible = nothing;
@@ -258,6 +291,7 @@ internal sealed class Inspector : Surface
             _layers.SetRows(LayerRows(document.Pages[page].Objects, page, _folded), selection.Select(item => item.Id));
         }
         _comments.SetRows(CommentRows(document), single is null ? [] : [single.Id]);
+        _properties.ResumeLayout(true);
         ResumeLayout(true);
         _syncing = false;
     }
@@ -277,7 +311,7 @@ internal sealed class Inspector : Surface
             }
             if (!shown.Add(group)) continue;
             var members = objects.Where(other => other.Group == group).Reverse().ToList();
-            yield return new ObjectRow(page, item, $"Group of {members.Count}", "", members);
+            yield return new ObjectRow(page, item, ToolStyles.GroupTitle(members), "", members);
             if (folded?.Contains(group) == true) continue;
             foreach (PageObject member in members) yield return new ObjectRow(page, member, ToolStyles.Describe(member), "", Indented: true);
         }
@@ -355,6 +389,8 @@ internal sealed class Inspector : Surface
         var menu = Menus.Create();
         menu.ShowImageMargin = false;
         bool locked = row.Objects.All(item => item.Locked);
+        menu.Items.Add(Menus.Item(row.Members is null ? "Rename" : "Rename Group", () => _layers.BeginRename(row), "F2"));
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Menus.Item(hidden ? "Show" : "Hide", () => ToggleHidden(row)));
         menu.Items.Add(Menus.Item(locked ? "Unlock" : "Lock", () => { _canvas.SetLocked(row.Objects, !locked); Sync(); }));
         menu.Items.Add(new ToolStripSeparator());
@@ -373,6 +409,26 @@ internal sealed class Inspector : Surface
         menu.Items.Add(Menus.Item(count > 1 ? $"Delete {count} Objects" : "Delete", _canvas.DeleteSelection, "Del"));
         menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
         Menus.Show(menu, _layers, at);
+    }
+
+    /// <summary>
+    /// Names a layer, or a group (the name kept on each of its objects). An empty name goes back to the one Sheaf gives:
+    /// what the object is, or how many a group has.
+    /// </summary>
+    void RenameLayer(ObjectRow row, string name)
+    {
+        name = name.Trim();
+        if (row.Members is { } members)
+        {
+            if (members.All(member => member.GroupName == name)) return;
+            _canvas.ChangeObjects(members, member => member.GroupName = name);
+        }
+        else
+        {
+            if (row.Item.Name == name) return;
+            _canvas.ChangeObject(row.Item, item => item.Name = name);
+        }
+        Sync();
     }
 
     /// <summary>Hides a layer, or a whole group, or shows it again.</summary>

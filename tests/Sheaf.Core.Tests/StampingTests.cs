@@ -117,6 +117,27 @@ public class StampingTests
         Assert.InRange(middle.R, 100, 155);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TextWatermarkIsFadedToItsOpacity(bool tiled)
+    {
+        using var temp = new TempFolder();
+        string path = BlankPage(temp.File("page.pdf"), 0, false);
+        using (PdfDocument document = PdfFiles.OpenForModify(path))
+        {
+            Stamping.AddWatermark(document, [0], new WatermarkStyle("WWWW", 200, Color.Black, 0.1, Diagonal: false, Tiled: tiled));
+            PdfFiles.Save(document, path);
+        }
+        using var preview = await PdfPreview.OpenAsync(path);
+        using Bitmap page = await preview.RenderAsync(0, RenderWidth);
+        int darkest = 255;
+        for (int y = 0; y < page.Height; y++)
+            for (int x = 0; x < page.Width; x++) darkest = Math.Min(darkest, page.GetPixel(x, y).R);
+        // Black at a tenth: the ink is there, but light grey, not black.
+        Assert.InRange(darkest, 200, 245);
+    }
+
     [Fact]
     public async Task PageNumbersUseTheirColour()
     {

@@ -28,6 +28,7 @@ internal static class EditorModes
 
     static readonly RailTool Select = new(EditTool.Select, "select", "Select", Keys.V);
     static readonly RailTool Hand = new(EditTool.Hand, "hand", "Hand", Keys.H);
+    static readonly RailTool Zoom = new(EditTool.Zoom, "search", "Zoom", Keys.Z);
 
     // Select and Hand pick text too when dragged across it; the tool that only picks text shares Select's button,
     // as does the one that moves the points of a shape or line.
@@ -49,7 +50,7 @@ internal static class EditorModes
     {
         DocumentMode.Edit =>
         [
-            [Select, VertexSelect, SelectText], [Hand],
+            [Select, VertexSelect, SelectText], [Hand, Zoom],
             [new(EditTool.Text, "text", "Text", Keys.T)],
             [
                 new(EditTool.Rectangle, "rect", "Rectangle", Keys.R),
@@ -77,7 +78,7 @@ internal static class EditorModes
         ],
         DocumentMode.Comment =>
         [
-            [Select, SelectText], [Hand],
+            [Select, SelectText], [Hand, Zoom],
             [new(EditTool.Highlight, "highlight", "Highlight", Keys.M)],
             [new(EditTool.Underline, "underline", "Underline", Keys.U)],
             [new(EditTool.Strikeout, "strike", "Strike Through", Keys.K)],
@@ -87,7 +88,7 @@ internal static class EditorModes
         ],
         DocumentMode.Sign =>
         [
-            [Select], [Hand],
+            [Select], [Hand, Zoom],
             [new(EditTool.Signature, "signature", "Signature", Keys.S)],
             [new(EditTool.Text, "text", "Text", Keys.T)],
             [new(EditTool.Date, "calendar", "Date", Keys.D)],
@@ -96,7 +97,7 @@ internal static class EditorModes
         ],
         DocumentMode.Redact =>
         [
-            [Select], [Hand],
+            [Select], [Hand, Zoom],
             [new(EditTool.RedactRectangle, "rect", "Mark a Rectangle", Keys.R)],
             [new(EditTool.RedactEllipse, "ellipse", "Mark an Ellipse", Keys.O)],
             [new(EditTool.RedactFreeform, "freeform", "Mark a Freeform Area", Keys.F)],
@@ -252,7 +253,7 @@ internal sealed class ToolStyles
     }
 
     /// <summary>A short name for an object, for layer and comment lists.</summary>
-    public static string Describe(PageObject item) => item.Kind switch
+    public static string Describe(PageObject item) => item.Name.Length > 0 ? item.Name : item.Kind switch
     {
         MarkKind.Text => FirstLine(item.Text, "Text"),
         MarkKind.Rectangle or MarkKind.Polygon when item.Comment.Length > 0 => item.Comment,
@@ -292,6 +293,10 @@ internal sealed class ToolStyles
         },
         _ => item.Kind.ToString(),
     };
+
+    /// <summary>A group's name: the one given to it, or how many objects it has.</summary>
+    public static string GroupTitle(IReadOnlyCollection<PageObject> members) =>
+        members.FirstOrDefault(member => member.GroupName.Length > 0)?.GroupName ?? $"Group of {members.Count}";
 
     static string FirstLine(string text, string fallback)
     {

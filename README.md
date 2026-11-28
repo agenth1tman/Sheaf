@@ -72,6 +72,16 @@ underline, any size (typed or from the slider), left, centre, right or justified
 colour, background, rounded corners. While typing, pick a word and make it bold, italic, underlined or another colour
 on its own. Drag across the PDF's own text with Select or Hand (or **Select Text**) to pick it and copy it.
 
+**Maths and science** have their own buttons while you type:
+
+- **Superscript** (Ctrl+Shift+=) and **Subscript** (Ctrl+=) raise or lower the words you pick: x², H₂O.
+- **Insert Symbol (Ω):** Greek letters, operators, sets and logic, arrows and units.
+- **Insert Equation (√x):** type it the quick way and watch the preview. `x^2` and `e^{-kt}` raise, `v_0` and
+  `x_{max}` lower, `\frac{d}{t}` stacks a fraction, `\alpha` `\Delta` `\pi` `\sum` `\int` `\infty` and other names
+  give symbols, and `<=` `>=` `!=` `~=` `->` `+-` `*` `sqrt(` give ≤ ≥ ≠ ≈ → ± × √(.
+
+Symbols are written in Segoe UI Symbol, which comes with Windows, so the saved PDF looks the same as the screen.
+
 ### Pictures
 
 Place images from a file or by dropping them on the page. Crop (free, square, 4:3 or 16:9), round the corners, fade,
@@ -91,6 +101,8 @@ the picture and the patch it leaves are grouped.
 - **Cut, copy and paste** with the buttons, the right-click menu or the usual keys. Paste lands under the pointer on
   any page of any open document, and takes pictures, image files and text from other apps too. Drag objects onto
   another page to move them there.
+- **Resize several objects at once:** choose two or more and one box with handles goes round them all; dragging a
+  handle scales them together (Shift keeps the shape at a corner).
 - **Align** edges and centres, **distribute** three or more objects evenly, bring forward or to front, send backward
   or to back, all from icon buttons.
 - **Layers:**
@@ -98,10 +110,13 @@ the picture and the patch it leaves are grouped.
     box from the empty space.
   - Drag layers to reorder them, drop them onto a group to put them in it, or drag them out again.
   - Fold groups away.
+  - Rename a layer or a group: double-click its name, press F2, or right-click it.
   - Group, ungroup, hide, duplicate and delete from the icons under the list or by right-clicking.
   - Lock a layer with the padlock next to its eye: it can't be clicked on the page, moved, erased or deleted.
 - Shared tool buttons (shapes, lines, lift) open their other tools when held: slide to one and let go.
 - **History** lists every step by name; jump back or forward to any of them. Undo and redo cover everything.
+- **Zoom (Z):** drag right to zoom in and left to zoom out, about the point you pressed; click to zoom in a step,
+  Alt+click or right-click to zoom out. Ctrl+wheel zooms towards the pointer.
 
 ### The other modes
 
@@ -185,16 +200,18 @@ language › Language).
 | Ctrl+Tab, Ctrl+] and Ctrl+[, Ctrl+1 … 9 | Next tab, next and previous tab, go to tab |
 | Ctrl+O, Ctrl+S, Ctrl+Shift+S | Open, save, save as |
 | Ctrl+Z, Ctrl+Y | Undo, redo |
-| V, D, H, E | Select, vertex select, hand, eraser |
+| V, D, H, Z, E | Select, vertex select, hand, zoom, eraser |
 | T, R, O, Y, L, A, C, P, B, I, X | Text, rectangle, ellipse, triangle, line, arrow, curve, pen, path pen, image, lift (Edit) |
 | M, U, K, N | Highlight, underline, strike through, note (Comment) |
 | S, D, X, C | Signature, date, tick, cross (Fill & Sign) |
 | Ctrl+G, Ctrl+Shift+G | Group, ungroup |
 | Space (held) or middle button | Pan |
-| Ctrl+wheel, Ctrl+plus/minus, Ctrl+0 | Zoom, fit width (or type a zoom in the box at the bottom) |
+| Ctrl+wheel, Ctrl+plus/minus, Ctrl+0 | Zoom (the wheel zooms towards the pointer), fit width (or type a zoom in the box at the bottom) |
 | Delete, arrows, Shift+arrows | Delete, nudge 1 or 10 pt |
 | Ctrl+D, Ctrl+X, Ctrl+C, Ctrl+V | Duplicate, cut, copy, paste |
 | Ctrl+B, Ctrl+I, Ctrl+U (while typing) | Bold, italic, underline the words picked |
+| Ctrl+Shift+=, Ctrl+= (while typing) | Superscript, subscript |
+| F2 (in the layers) | Rename the layer or group |
 | Enter, with a tool chosen | Place what it makes in the middle of the view |
 | Space (Scan) | Capture a page with the camera |
 
@@ -260,7 +277,7 @@ Other command-line options: `Sheaf.exe [files…] [--tool <id>]`, for example `-
 
 | Folder | What's there |
 | --- | --- |
-| `src/Sheaf.Core/Editing` | The document model (pages and the objects added to them), shape geometry and pens (`ShapeGeometry`), paths and their points (`PathEditing`), text with styled words (`TextLayout`), recognising held strokes (`ShapeRecognizer`), pictures (`ImageLook`), opening and saving with the editable layer, form fields, finding text and codes, redaction |
+| `src/Sheaf.Core/Editing` | The document model (pages and the objects added to them), shape geometry and pens (`ShapeGeometry`), paths and their points (`PathEditing`), text with styled words, scripts and fractions (`TextLayout`), quick equation typing (`MathText`), recognising held strokes (`ShapeRecognizer`), pictures (`ImageLook`), opening and saving with the editable layer, form fields, finding text and codes, redaction |
 | `src/Sheaf.Core/Scanning`, `Ocr` | Page edges, straightening and filters; writing scans; OCR and the invisible text layer |
 | `src/Sheaf.Core/Pdf`, `Rendering`, `Office` | Page operations, taking text out for redaction (`TextRemover`), stamping, compression, encryption, rendering with Windows.Data.Pdf, Office conversion (`Office/BuiltIn`: Sheaf's own Word, Excel, PowerPoint and PDF to Word converters), OneNote |
 | `src/Sheaf/Shell` | The window: custom title bar with tabs |
@@ -301,6 +318,8 @@ The file list, primary button, progress, cancel, result line and Recent files co
 - Paths don't take line ends: turning a line or an arrow into a path (by adding a point, pulling out handles or
   closing it) drops its arrowheads.
 - Page colour applies to blank pages; pages from a PDF keep their own paper.
+- While you type in a text box, a fraction shows as a raised top and a lowered bottom; it stacks on the page once you
+  finish typing.
 
 ## Where files live and uninstalling
 

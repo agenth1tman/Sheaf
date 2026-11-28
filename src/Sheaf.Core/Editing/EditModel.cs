@@ -36,6 +36,12 @@ public enum TextAlign { Left, Center, Right, Justify }
 public enum TextAnchor { Top, Middle, Bottom }
 
 /// <summary>
+/// Where a stretch of text sits on its line: on it, raised small (x²), lowered small (H₂O), or the top (<see cref="Over"/>)
+/// or bottom (<see cref="Under"/>) of a fraction: an Over stretch followed by an Under one stack with a bar between.
+/// </summary>
+public enum TextScript { Normal, Super, Sub, Over, Under }
+
+/// <summary>
 /// Something added to a page: text, a shape, ink, an image, markup, a note or a redaction mark.
 /// Coordinates are points in the page's own view (top-left origin, after the page's /Rotate in the source file,
 /// before any turn added in Sheaf), so turning a page later carries its objects with it.
@@ -105,6 +111,13 @@ public sealed class PageObject
     public float Opacity { get; set; } = 1;
     public byte[]? ImageData { get; set; }
     public string Comment { get; set; } = "";
+
+    /// <summary>A name given in the layer list; empty shows what the object is ("Rectangle", its text).</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>A name given to the object's group in the layer list (kept on every member); empty shows "Group of n".</summary>
+    public string GroupName { get; set; } = "";
+
     public bool Hidden { get; set; }
 
     /// <summary>A locked object can't be chosen on the page, moved or erased; the layer list unlocks it.</summary>
@@ -210,6 +223,12 @@ public sealed record TextSpan
 
     /// <summary>ARGB.</summary>
     public int Color { get; set; }
+
+    /// <summary>Raised or lowered and small, for powers and subscripts.</summary>
+    public TextScript Script { get; set; }
+
+    /// <summary>A font of its own for the stretch (symbols the box's font doesn't have); empty for the box's font.</summary>
+    public string Font { get; set; } = "";
 }
 
 /// <summary>A page of the working document: a page of one of the source files, or a blank page.</summary>

@@ -11,7 +11,7 @@
     <Authors>agenth1tman</Authors>
     <Product>Sheaf</Product>
     <Copyright>© 2026 agenth1tman</Copyright>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <!-- The UI is built in code, not in the designer, so designer serialization hints don't apply. -->
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
